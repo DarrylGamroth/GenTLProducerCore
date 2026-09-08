@@ -216,8 +216,11 @@ std::filesystem::path cti_runtime_path(const std::filesystem::path &fallback) {
   Dl_info info{};
   if (dladdr(reinterpret_cast<const void *>(&cti_runtime_path), &info) == 0 ||
       info.dli_fname == nullptr) {
-    return fallback.empty() ? std::filesystem::current_path() / "producer.cti"
-                            : fallback;
+    if (fallback.empty()) {
+      return std::filesystem::current_path() / "producer.cti";
+    }
+    return fallback.is_absolute() ? fallback
+                                  : std::filesystem::current_path() / fallback;
   }
   std::error_code error;
   const std::filesystem::path absolute = std::filesystem::absolute(info.dli_fname, error);

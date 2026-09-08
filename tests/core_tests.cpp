@@ -138,11 +138,18 @@ void test_info_sizing_and_copying() {
          GenTL::GC_ERR_INVALID_PARAMETER);
 }
 
+void test_runtime_path_is_absolute() {
+  using namespace gentl_producer_core;
+  EXPECT(cti_runtime_path("fallback.cti").is_absolute());
+  EXPECT(cti_runtime_directory().is_absolute());
+}
+
 } // namespace
 
 int main() {
   test_port_reads_and_writes();
   test_embedded_xml();
   test_info_sizing_and_copying();
+  test_runtime_path_is_absolute();
   return failures == 0 ? 0 : 1;
 }
