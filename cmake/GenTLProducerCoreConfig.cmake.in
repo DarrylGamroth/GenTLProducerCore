@@ -1,0 +1,30 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set(GenTLHeaders_ROOT "" CACHE PATH
+    "Root of the unpacked GenICam package containing GenTL/GenTL.h")
+if(NOT GenTLHeaders_ROOT)
+  message(FATAL_ERROR
+    "GenTLProducerCore requires GenTLHeaders_ROOT to locate GenTL/GenTL.h")
+endif()
+
+find_path(GenTLHeaders_INCLUDE_DIR
+  NAMES GenTL.h
+  HINTS "${GenTLHeaders_ROOT}"
+  PATH_SUFFIXES GenTL
+  NO_DEFAULT_PATH)
+if(NOT GenTLHeaders_INCLUDE_DIR)
+  message(FATAL_ERROR
+    "GenTL.h was not found below GenTLHeaders_ROOT='${GenTLHeaders_ROOT}'")
+endif()
+
+if(NOT TARGET GenTLHeaders::GenTLHeaders)
+  add_library(GenTLHeaders::GenTLHeaders INTERFACE IMPORTED)
+  set_target_properties(GenTLHeaders::GenTLHeaders PROPERTIES
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${GenTLHeaders_INCLUDE_DIR}"
+    INTERFACE_INCLUDE_DIRECTORIES "${GenTLHeaders_INCLUDE_DIR}")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/GenTLProducerCoreTargets.cmake")
+check_required_components(GenTLProducerCore)
