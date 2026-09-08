@@ -55,8 +55,22 @@ Adopt one producer at a time.
 5. Build its vendor-backed producer and run its existing GenTL conformance test.
 6. Verify the CTI has no runtime dependency on a shared core library.
 
-The first adoption should establish the exact integration convention and only
-then be repeated in the other two repositories.
+The first adoption established the integration convention, which was then
+applied independently to the other producers.
+
+### Phase-1 completion evidence
+
+As of 2026-09-08, all three producer repositories consume the core through the
+same CMake target and retain only their producer-specific module-port assembly.
+
+| Producer | Source-checkout build | Installed-package build | Existing producer test | Runtime core dependency |
+| --- | --- | --- | --- | --- |
+| continuousSDK2GenTL | Passed | Passed | Mock SDK2 conformance passed | None; core linked statically |
+| continuousSDK3GenTL | Passed | Passed | simulator and XML-schema tests passed | None; core linked statically |
+| trigger_fixtureGenTL | Passed | Passed | Mock triggered/CLProtocol smoke test passed | None; core linked statically |
+
+These are software and simulator/mock results. They do not qualify physical
+cameras, frame grabbers, vendor kernel drivers, timing, or transport behavior.
 
 ## Later lifecycle extraction
 
