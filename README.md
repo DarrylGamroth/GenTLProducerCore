@@ -12,27 +12,41 @@ its `.cti` and deliver one self-contained transport-layer binary.
 
 ## Build and install
 
-`GenTLHeaders_ROOT` is deliberately explicit. Set it to the unpacked GenICam
-package root, whose `GenTL/GenTL.h` file is used at configure time.
+By default, configuration downloads EMVA's standalone GenTL 1.6 header archive
+and verifies its SHA-256 hash. No full GenICam package is needed.
 
 ```sh
-cmake -S . -B build -DGenTLHeaders_ROOT=../GenICam_Package_2025.10
+cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 cmake --install build --prefix "$PWD/install"
 ```
 
+For offline builds, point `GenTLHeaders_ROOT` at a directory containing either
+`GenTL.h` or `GenTL/GenTL.h` and disable downloading:
+
+```sh
+cmake -S . -B build \
+  -DGenTLHeaders_ROOT=/path/to/headers \
+  -DGenTLProducerCore_FETCH_GENTL_HEADERS=OFF
+```
+
 Consumers use the exported target after locating this package:
 
 ```cmake
-set(GenTLHeaders_ROOT /path/to/GenICam_Package_2025.10)
 find_package(GenTLProducerCore CONFIG REQUIRED)
 target_link_libraries(my_producer PRIVATE GenTLProducerCore::gentl_producer_core)
 ```
 
-The installed package requires the same explicit `GenTLHeaders_ROOT` setting,
-because `GenTL.h` is an SDK header supplied by the consumer rather than copied
-into this repository or its install tree.
+The installed package uses the same download-or-explicit-root behavior. The
+download is cached under the consumer's build directory. Set
+`GenTLProducerCore_FETCH_GENTL_HEADERS=OFF` for a network-free configure.
+
+`GenTL.h` is supplied under the EMVA GenICam license. Keep it unmodified and
+follow the source/binary redistribution notice requirements in the current
+[GenICam license](https://www.emva.org/wp-content/uploads/GenICam_License_20231009.pdf).
+The complete dependency and distribution summary is in
+[`docs/EMVA_DEPENDENCIES.md`](docs/EMVA_DEPENDENCIES.md).
 
 ## Phase-1 API
 

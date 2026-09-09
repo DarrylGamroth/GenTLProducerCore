@@ -41,8 +41,9 @@ Phase 1 owns the following API in namespace `gentl_producer_core`:
 
 Phase-1 completion evidence is a C++20 PIC static library, a CMake install and
 export package, and tests for register accesses, embedded XML reads, and GenTL
-information buffer sizing/copying. The package requires an explicit
-`GenTLHeaders_ROOT`; it must never bundle GenICam headers or vendor SDK assets.
+information buffer sizing/copying. The package downloads the pinned standalone
+GenTL header by default or accepts an explicit `GenTLHeaders_ROOT` for offline
+builds; it must never bundle GenICam headers or vendor SDK assets.
 
 ## Producer adoption
 
@@ -95,8 +96,8 @@ directly queued-buffer paths have a tested, explicit strategy boundary.
 
 - ABI drift: retain a C++20-only library API and run each producer's GenTL
   conformance test after adoption.
-- Header ambiguity: require `GenTLHeaders_ROOT` during both build and package
-  consumption.
+- Header ambiguity: use the pinned GenTL 1.6 download by default and require an
+  explicit `GenTLHeaders_ROOT` when dependency downloading is disabled.
 - Accidental SDK coupling: the core build must not search vendor include or
   library paths.
 - Premature lifecycle unification: defer lifecycle extraction until behavior

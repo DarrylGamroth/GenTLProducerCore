@@ -1,33 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(GenTLProducerCore VERSION 0.1.0 LANGUAGES CXX)
+project(GenTLProducerCore VERSION 0.1.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
-
-set(GenTLHeaders_ROOT "" CACHE PATH
-    "Root of the unpacked GenICam package containing GenTL/GenTL.h")
-
-if(NOT GenTLHeaders_ROOT)
-  message(FATAL_ERROR
-    "GenTLHeaders_ROOT is required; set it to the unpacked GenICam package root")
-endif()
-
-find_path(GenTLHeaders_INCLUDE_DIR
-  NAMES GenTL.h
-  HINTS "${GenTLHeaders_ROOT}"
-  PATH_SUFFIXES GenTL
-  NO_DEFAULT_PATH)
-
-if(NOT GenTLHeaders_INCLUDE_DIR)
-  message(FATAL_ERROR
-    "GenTL.h was not found below GenTLHeaders_ROOT='${GenTLHeaders_ROOT}'")
-endif()
-
-add_library(GenTLHeaders::GenTLHeaders INTERFACE IMPORTED GLOBAL)
-set_target_properties(GenTLHeaders::GenTLHeaders PROPERTIES
-  INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${GenTLHeaders_INCLUDE_DIR}"
-  INTERFACE_INCLUDE_DIRECTORIES "${GenTLHeaders_INCLUDE_DIR}")
+include(cmake/GenTLHeaders.cmake)
+gentl_producer_core_provide_gentl_headers()
 
 add_library(gentl_producer_core STATIC
   src/info.cpp
@@ -70,6 +48,7 @@ install(EXPORT GenTLProducerCoreTargets
 install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfig.cmake"
   "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
+  cmake/GenTLHeaders.cmake
   DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
 
 include(CTest)
