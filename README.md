@@ -58,3 +58,10 @@ The complete dependency and distribution summary is in
 
 The full migration boundary and follow-on lifecycle extraction are in
 [docs/MIGRATION.md](docs/MIGRATION.md).
+
+## Debian and Ubuntu package
+
+The containerized package build and artifact-export commands are documented in
+[`packaging/debian/README.md`](packaging/debian/README.md). The resulting
+`libgentl-producer-core-dev` package contains only development files; it does
+not install a runtime shared library.

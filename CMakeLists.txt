@@ -26,30 +26,35 @@ target_link_libraries(gentl_producer_core PUBLIC GenTLHeaders::GenTLHeaders PRIV
 target_compile_options(gentl_producer_core PRIVATE
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
-install(TARGETS gentl_producer_core
-  EXPORT GenTLProducerCoreTargets
-  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  install(TARGETS gentl_producer_core
+    EXPORT GenTLProducerCoreTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
-set(GENTL_PRODUCER_CORE_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/GenTLProducerCore")
-configure_package_config_file(
-  cmake/GenTLProducerCoreConfig.cmake.in
-  "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfig.cmake"
-  INSTALL_DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
-write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
-  VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMinorVersion)
-install(EXPORT GenTLProducerCoreTargets
-  FILE GenTLProducerCoreTargets.cmake
-  NAMESPACE GenTLProducerCore::
-  DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
-install(FILES
-  "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfig.cmake"
-  "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
-  cmake/GenTLHeaders.cmake
-  DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
+  set(GENTL_PRODUCER_CORE_CMAKE_DIR
+      "${CMAKE_INSTALL_LIBDIR}/cmake/GenTLProducerCore")
+  configure_package_config_file(
+    cmake/GenTLProducerCoreConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfig.cmake"
+    INSTALL_DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
+  write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMinorVersion)
+  install(EXPORT GenTLProducerCoreTargets
+    FILE GenTLProducerCoreTargets.cmake
+    NAMESPACE GenTLProducerCore::
+    DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
+    cmake/GenTLHeaders.cmake
+    DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
+  install(FILES README.md docs/EMVA_DEPENDENCIES.md
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libgentl-producer-core-dev")
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -58,4 +63,8 @@ if(BUILD_TESTING)
   target_compile_options(gentl_producer_core_tests PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
   add_test(NAME gentl_producer_core_tests COMMAND gentl_producer_core_tests)
+endif()
+
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  include(packaging/debian/CPackConfig.cmake)
 endif()
