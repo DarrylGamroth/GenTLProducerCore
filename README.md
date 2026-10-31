@@ -5,11 +5,20 @@ producer implementations. It centralizes vendor-neutral port and information
 code while keeping each producer repository buildable with only its own
 vendor SDK.
 
-The library contains no camera discovery, device control, buffer ownership, or
-vendor headers. Its buffer information formatter consumes caller-supplied
-values and does not own buffer state or synchronization. It depends only on the GenICam `GenTL.h` header, `dl`, and the
-C++ standard library. The static library is PIC so a producer can link it into
-its `.cti` and deliver one self-contained transport-layer binary.
+The base library provides register, XML, metadata and error helpers. Optional
+runtime targets implement the GenTL ABI, handles, events and buffer bookkeeping
+for either pull/copy or directly queued buffers. Discovery and device controls
+are backend operations; no target includes a vendor SDK or links a vendor
+library. Dependencies are GenTL.h, Threads, dl and the C++ standard library.
+Static PIC linkage keeps each CTI self-contained.
+
+For a complete producer, link `GenTLProducerCore::copy_runtime` or
+`GenTLProducerCore::queued_runtime` and supply a `ProducerDefinition` in its
+assembly source. The matching backend derives from `CopyBackend` or
+`QueuedBackend`. Instrumented `_test` runtime targets are development-only
+archives for deterministic producer regressions; production CTIs use the
+un-instrumented targets. See [the runtime extraction record](docs/RUNTIME_EXTRACTION.md)
+for contracts, migration, validation and current lifetime boundaries.
 
 ## Build and install
 
@@ -49,7 +58,7 @@ follow the source/binary redistribution notice requirements in the current
 The complete dependency and distribution summary is in
 [`docs/EMVA_DEPENDENCIES.md`](docs/EMVA_DEPENDENCIES.md).
 
-## Phase-1 API
+## Shared APIs
 
 - `PortModel`, `PortDescriptor`, `PortUrlInfo`, and `XmlFileInfo`
 - register constructors: `integer_register` and `string_register`

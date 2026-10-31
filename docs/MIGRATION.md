@@ -112,3 +112,21 @@ directly queued-buffer paths have a tested, explicit strategy boundary.
   library paths.
 - Premature lifecycle unification: defer lifecycle extraction until behavior
   and ownership contracts are specified and tested.
+
+
+## Generic runtime separation, core 0.2
+
+SDK2 and SDK3 now consume explicit shared ownership runtimes. Their local
+src/core trees have been removed. Producer assembly injects identity, module
+XML and a typed backend factory. Vendor backends supply discovery, camera
+controls, stream alignment and remote-feature policy; SDK2 uses CopyBackend,
+SDK3 uses QueuedBackend. Identical ABI/state/module-port implementations are
+shared, while the two reviewed ownership paths remain distinct.
+
+This completes vendor separation for these two runtimes, not universal handle
+lifetime management or every planned consolidation phase. The earlier deferred
+lifecycle table describes the broader roadmap. See
+[RUNTIME_EXTRACTION.md](RUNTIME_EXTRACTION.md) for the delivered boundary.
+Other producers using the 0.1 package interface require explicit migration to
+0.2; the package's SameMinorVersion policy intentionally does not silently
+substitute 0.2 for an installed 0.1 dependency.

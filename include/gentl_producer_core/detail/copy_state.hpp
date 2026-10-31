@@ -1,0 +1,263 @@
+#pragma once
+
+#include <atomic>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "GenTL.h"
+
+#include "gentl_producer_core/producer.hpp"
+#include "gentl_producer_core/detail/module_ports.hpp"
+#include "gentl_producer_core/info.hpp"
+
+namespace gentl_producer_core::runtime {
+
+using gentl_producer_core::AcquireFrameResult;
+using gentl_producer_core::AcquireFrameStatus;
+using gentl_producer_core::BackendInfo;
+using gentl_producer_core::DeviceDescriptor;
+using gentl_producer_core::PortModel;
+using gentl_producer_core::StreamDescription;
+
+enum class HandleKind {
+  kTl,
+  kIf,
+  kDev,
+  kDs,
+  kPort,
+  kBuffer,
+  kEvent,
+};
+
+struct BaseHandle {
+  explicit BaseHandle(HandleKind in_kind) : kind(in_kind) {}
+  virtual ~BaseHandle() = default;
+  HandleKind kind;
+};
+
+struct TlHandleData final : BaseHandle {
+  TlHandleData();
+  std::mutex mutex;
+  std::size_t open_interfaces = 0;
+  std::uint64_t interface_selector = 0;
+  std::unique_ptr<PortModel> port_model;
+};
+
+struct IfHandleData final : BaseHandle {
+  IfHandleData(TlHandleData *in_parent, std::string in_id);
+  TlHandleData *parent = nullptr;
+  std::string id;
+  std::mutex mutex;
+  std::size_t open_devices = 0;
+  std::uint64_t device_selector = 0;
+  std::unique_ptr<PortModel> port_model;
+};
+
+struct DevHandleData;
+
+enum class PortKind {
+  kRemoteDevice,
+};
+
+struct PortHandleData final : BaseHandle {
+  PortHandleData(PortKind in_port_kind, DevHandleData *in_owner);
+  PortKind port_kind;
+  DevHandleData *owner = nullptr;
+  std::string id;
+  std::mutex mutex;
+  std::vector<struct EventHandleData *> feature_invalidate_events;
+  std::unique_ptr<PortModel> port_model;
+};
+
+struct DevHandleData final : BaseHandle {
+  DevHandleData(IfHandleData *in_parent, DeviceDescriptor in_device,
+                GenTL::DEVICE_ACCESS_FLAGS in_access);
+  IfHandleData *parent = nullptr;
+  DeviceDescriptor device;
+  GenTL::DEVICE_ACCESS_FLAGS access = GenTL::DEVICE_ACCESS_NONE;
+  std::mutex mutex;
+  std::size_t open_streams = 0;
+  bool acquisition_active = false;
+  std::uint64_t stream_selector = 0;
+  std::unique_ptr<PortHandleData> remote_port;
+  std::unique_ptr<PortModel> port_model;
+};
+
+struct EventHandleData;
+
+enum class BufferAllocationMode {
+  kUnset,
+  kConsumer,
+  kProducer,
+};
+
+struct DsHandleData final : BaseHandle {
+  explicit DsHandleData(DevHandleData *in_parent);
+  DevHandleData *parent = nullptr;
+  std::string id;
+  bool is_acquiring = false;
+  std::uint64_t delivered_count = 0;
+  std::uint64_t started_count = 0;
+  std::uint64_t underrun_count = 0;
+  std::uint64_t frame_sequence = 0;
+  std::uint64_t acquisition_limit = 0;
+  bool acquisition_session_active = false;
+  BufferAllocationMode buffer_allocation_mode = BufferAllocationMode::kUnset;
+  std::vector<std::unique_ptr<struct BufferHandleData>> buffers;
+  std::deque<struct BufferHandleData *> input_queue;
+  std::unique_ptr<PortModel> port_model;
+  std::mutex mutex;
+  std::thread worker;
+  bool stop_requested = false;
+  bool worker_running = false;
+  std::size_t current_width = 0;
+  std::size_t current_height = 0;
+  std::size_t current_offset_x = 0;
+  std::size_t current_offset_y = 0;
+  std::size_t current_payload_size = 0;
+  std::size_t current_buffer_alignment = 1;
+  std::uint32_t current_pixel_format = 0;
+  std::uint32_t current_pixel_size_bits = 0;
+  std::string worker_error;
+  std::vector<EventHandleData *> new_buffer_events;
+};
+
+struct BufferHandleData final : BaseHandle {
+  BufferHandleData(DsHandleData *in_parent, void *in_base, std::size_t in_size,
+                   void *in_private, bool in_producer_owned);
+  DsHandleData *parent = nullptr;
+  std::unique_ptr<std::byte[]> owned_storage;
+  void *base = nullptr;
+  std::size_t size = 0;
+  void *private_data = nullptr;
+  bool producer_owned = false;
+  bool is_queued = false;
+  bool has_new_data = false;
+  bool awaiting_delivery = false;
+  bool is_acquiring = false;
+  bool is_incomplete = false;
+  std::size_t size_filled = 0;
+  StreamDescription image;
+  std::uint64_t frame_id = 0;
+  std::uint64_t timestamp = 0;
+};
+
+struct EventHandleData final : BaseHandle {
+  EventHandleData(BaseHandle *in_source, GenTL::EVENT_TYPE in_event_type);
+  BaseHandle *source = nullptr;
+  GenTL::EVENT_TYPE event_type = GenTL::EVENT_ERROR;
+  mutable std::mutex mutex;
+  std::condition_variable condition;
+  std::deque<GenTL::EVENT_NEW_BUFFER_DATA> new_buffer_queue;
+  std::deque<std::string> feature_invalidate_queue;
+  std::uint64_t fired_count = 0;
+  bool registered = true;
+  std::atomic<std::uint32_t> references{1};
+};
+
+class Runtime {
+public:
+  using DeviceList = std::vector<DeviceDescriptor>;
+
+  static Runtime &instance();
+
+  GenTL::GC_ERROR init();
+  GenTL::GC_ERROR close();
+  bool is_initialized() const;
+  bool claim_system_open();
+  void release_system_open();
+
+  void set_last_error(GenTL::GC_ERROR code, std::string text);
+  std::pair<GenTL::GC_ERROR, std::string> last_error() const;
+  const BackendInfo &backend_info() const;
+  bool remote_write_requires_idle(std::uint64_t address, std::size_t size) const {
+    return backend_->remote_write_requires_idle(address, size);
+  }
+  std::vector<std::string> remote_invalidated_features(std::uint64_t address,
+                                                      std::size_t size) const {
+    return backend_->remote_invalidated_features(address, size);
+  }
+  std::vector<std::string> acquisition_invalidated_features() const {
+    return backend_->acquisition_invalidated_features();
+  }
+  std::unique_ptr<PortModel>
+  make_remote_port_model(const DeviceDescriptor &device);
+  bool get_stream_description(const DeviceDescriptor &device,
+                              StreamDescription *description,
+                              std::string *error_text);
+  bool start_stream(const DeviceDescriptor &device, std::string *error_text);
+  bool stop_stream(const DeviceDescriptor &device, std::string *error_text);
+  bool acquire_frame(const DeviceDescriptor &device, uint64_t timeout_ms,
+                     void *buffer, std::size_t buffer_size,
+                     AcquireFrameResult *result, std::string *error_text);
+
+  GenTL::GC_ERROR refresh_cameras(bool8_t *changed);
+  DeviceList snapshot_cameras(GenTL::GC_ERROR *error_code);
+  std::optional<DeviceDescriptor>
+  find_camera_by_id(std::string_view device_id, GenTL::GC_ERROR *error_code);
+  bool claim_device_open(std::string_view device_id,
+                         GenTL::DEVICE_ACCESS_FLAGS access);
+  void release_device_open(std::string_view device_id,
+                           GenTL::DEVICE_ACCESS_FLAGS access);
+
+  static TlHandleData *as_tl(GenTL::TL_HANDLE handle);
+  static IfHandleData *as_if(GenTL::IF_HANDLE handle);
+  static DevHandleData *as_dev(GenTL::DEV_HANDLE handle);
+  static DsHandleData *as_ds(GenTL::DS_HANDLE handle);
+  static BufferHandleData *as_buffer(GenTL::BUFFER_HANDLE handle);
+  static PortHandleData *as_port(GenTL::PORT_HANDLE handle);
+  static EventHandleData *as_event(GenTL::EVENT_HANDLE handle);
+
+private:
+  Runtime();
+  GenTL::GC_ERROR refresh_cameras_locked(bool8_t *changed);
+
+  template <typename T>
+  static T *checked_cast(void *raw_handle, HandleKind expected_kind) {
+    if (raw_handle == nullptr) {
+      return nullptr;
+    }
+    auto *base = static_cast<BaseHandle *>(raw_handle);
+    if (base->kind != expected_kind) {
+      return nullptr;
+    }
+    return static_cast<T *>(base);
+  }
+
+  mutable std::mutex mutex_;
+  bool initialized_ = false;
+  bool system_open_ = false;
+  std::unique_ptr<RuntimeBackend> backend_;
+  DeviceList cached_cameras_;
+  bool camera_list_valid_ = false;
+  struct DeviceOpenState {
+    std::size_t readonly_count = 0;
+    bool control_open = false;
+    bool exclusive_open = false;
+  };
+  std::unordered_map<std::string, DeviceOpenState> device_opens_;
+};
+
+bool retain_event(EventHandleData *event);
+void release_event(EventHandleData *event);
+
+using gentl_producer_core::copy_scalar;
+using gentl_producer_core::copy_string;
+using gentl_producer_core::info_scalar;
+using gentl_producer_core::info_string;
+
+PortModel *port_model_from_handle(void *raw_handle);
+const PortModel *port_model_from_handle(const void *raw_handle);
+
+} // namespace gentl_producer_core::runtime
