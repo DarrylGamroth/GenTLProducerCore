@@ -1,6 +1,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+find_dependency(Threads)
 include("${CMAKE_CURRENT_LIST_DIR}/GenTLHeaders.cmake")
 gentl_producer_core_provide_gentl_headers()
 

@@ -21,7 +21,9 @@ GenTL::GC_ERROR copy_string(std::string_view value, GenTL::INFO_DATATYPE type,
     return GenTL::GC_ERR_BUFFER_TOO_SMALL;
   }
 
-  std::memcpy(buffer, value.data(), value.size());
+  if (!value.empty()) {
+    std::memcpy(buffer, value.data(), value.size());
+  }
   static_cast<char *>(buffer)[value.size()] = '\0';
   *size = required_size;
   return GenTL::GC_ERR_SUCCESS;

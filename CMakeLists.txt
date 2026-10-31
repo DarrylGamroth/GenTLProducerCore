@@ -1,13 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(GenTLProducerCore VERSION 0.1.1 LANGUAGES CXX)
+project(GenTLProducerCore VERSION 0.1.2 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+find_package(Threads REQUIRED)
 include(cmake/GenTLHeaders.cmake)
 gentl_producer_core_provide_gentl_headers()
 
 add_library(gentl_producer_core STATIC
+  src/buffer_info.cpp
   src/info.cpp
   src/port_model.cpp)
 add_library(GenTLProducerCore::gentl_producer_core ALIAS gentl_producer_core)
@@ -22,7 +24,7 @@ target_include_directories(gentl_producer_core
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-target_link_libraries(gentl_producer_core PUBLIC GenTLHeaders::GenTLHeaders PRIVATE dl)
+target_link_libraries(gentl_producer_core PUBLIC GenTLHeaders::GenTLHeaders PRIVATE dl Threads::Threads)
 target_compile_options(gentl_producer_core PRIVATE
   -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
 
@@ -58,11 +60,21 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  add_library(gentl_runtime_path_test_module MODULE tests/runtime_path_module.cpp)
+  target_link_libraries(gentl_runtime_path_test_module PRIVATE gentl_producer_core)
   add_executable(gentl_producer_core_tests tests/core_tests.cpp)
-  target_link_libraries(gentl_producer_core_tests PRIVATE gentl_producer_core)
+  target_compile_definitions(gentl_producer_core_tests PRIVATE
+    GENTL_RUNTIME_PATH_TEST_MODULE="$<TARGET_FILE:gentl_runtime_path_test_module>")
+  add_dependencies(gentl_producer_core_tests gentl_runtime_path_test_module)
+  target_link_libraries(gentl_producer_core_tests PRIVATE gentl_producer_core Threads::Threads)
   target_compile_options(gentl_producer_core_tests PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
   add_test(NAME gentl_producer_core_tests COMMAND gentl_producer_core_tests)
+  add_executable(gentl_buffer_info_tests tests/buffer_info_tests.cpp)
+  target_link_libraries(gentl_buffer_info_tests PRIVATE gentl_producer_core)
+  target_compile_options(gentl_buffer_info_tests PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+  add_test(NAME gentl_buffer_info_tests COMMAND gentl_buffer_info_tests)
 endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)

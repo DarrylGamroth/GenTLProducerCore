@@ -6,6 +6,8 @@
 #include <array>
 #include <cstring>
 #include <iomanip>
+#include <limits>
+#include <mutex>
 #include <sstream>
 #include <utility>
 
@@ -14,9 +16,35 @@ namespace {
 
 constexpr std::size_t integer_register_size = sizeof(std::uint64_t);
 
-std::string make_file_url(const std::filesystem::path &path) {
-  return "file://" + path.lexically_normal().string() +
-         "?SchemaVersion=1.1.0";
+// Resolve relative loader names before application code can change the cwd.
+const std::filesystem::path runtime_module_path = [] {
+  Dl_info info{};
+  if (dladdr(reinterpret_cast<const void *>(&cti_runtime_path), &info) == 0 ||
+      info.dli_fname == nullptr) {
+    return std::filesystem::path{};
+  }
+  std::error_code error;
+  auto path = std::filesystem::absolute(info.dli_fname, error);
+  return error ? std::filesystem::path{} : path.lexically_normal();
+}();
+
+std::string make_file_url(const std::filesystem::path &path,
+                          const XmlFileInfo &file) {
+  constexpr char hex[] = "0123456789ABCDEF";
+  std::string url = "file://";
+  for (const unsigned char byte : path.lexically_normal().generic_string()) {
+    if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+        (byte >= '0' && byte <= '9') || byte == '-' || byte == '.' ||
+        byte == '_' || byte == '~' || byte == '/') {
+      url += static_cast<char>(byte);
+    } else {
+      url += '%';
+      url += hex[byte >> 4U];
+      url += hex[byte & 0x0fU];
+    }
+  }
+  return url + "?SchemaVersion=" + std::to_string(file.schema_major) + '.' +
+         std::to_string(file.schema_minor) + ".0";
 }
 
 std::uint64_t region_size(const PortModel::RegisterRegion &region) {
@@ -31,6 +59,11 @@ bool contains(const PortModel::RegisterRegion &region, std::uint64_t address,
   }
   const std::uint64_t offset = address - region.address;
   const std::uint64_t length = region_size(region);
+  if ((!region.access && length > region.data.size()) ||
+      (length != 0U && length - 1U >
+          std::numeric_limits<std::uint64_t>::max() - region.address)) {
+    return false;
+  }
   return offset <= length && static_cast<std::uint64_t>(size) <= length - offset;
 }
 
@@ -46,15 +79,28 @@ PortModel::RegisterRegion integer_register(std::uint64_t address,
       .size = integer_register_size,
       .readable = static_cast<bool>(getter),
       .writable = writable,
-      .access = [getter = std::move(getter), setter = std::move(setter)](
+      .access = [getter = std::move(getter), setter = std::move(setter),
+                 mutex = std::make_shared<std::mutex>()](
                     std::uint64_t offset, std::span<std::byte> bytes,
                     bool write) -> GenTL::GC_ERROR {
+        std::scoped_lock lock(*mutex);
         if (write) {
-          if (!setter || offset != 0U || bytes.size() != integer_register_size) {
-            return GenTL::GC_ERR_INVALID_PARAMETER;
+          if (!setter) {
+            return GenTL::GC_ERR_ACCESS_DENIED;
           }
           std::uint64_t value = 0;
-          std::memcpy(&value, bytes.data(), sizeof(value));
+          if (offset == 0U && bytes.size() == integer_register_size) {
+            std::memcpy(&value, bytes.data(), sizeof(value));
+          } else {
+            if (!getter) {
+              return GenTL::GC_ERR_INVALID_PARAMETER;
+            }
+            value = getter();
+            if (!bytes.empty()) {
+              std::memcpy(reinterpret_cast<std::byte *>(&value) + offset,
+                          bytes.data(), bytes.size());
+            }
+          }
           return setter(value);
         }
         if (!getter) {
@@ -63,7 +109,9 @@ PortModel::RegisterRegion integer_register(std::uint64_t address,
         const std::uint64_t value = getter();
         std::array<std::byte, integer_register_size> encoded{};
         std::memcpy(encoded.data(), &value, sizeof(value));
-        std::memcpy(bytes.data(), encoded.data() + offset, bytes.size());
+        if (!bytes.empty()) {
+          std::memcpy(bytes.data(), encoded.data() + offset, bytes.size());
+        }
         return GenTL::GC_ERR_SUCCESS;
       }};
 }
@@ -86,8 +134,12 @@ PortModel::RegisterRegion string_register(std::uint64_t address,
         std::vector<std::byte> encoded(length);
         const std::string value = getter();
         const std::size_t count = length == 0U ? 0U : std::min(value.size(), length - 1U);
-        std::memcpy(encoded.data(), value.data(), count);
-        std::memcpy(bytes.data(), encoded.data() + offset, bytes.size());
+        if (count != 0U) {
+          std::memcpy(encoded.data(), value.data(), count);
+        }
+        if (!bytes.empty()) {
+          std::memcpy(bytes.data(), encoded.data() + offset, bytes.size());
+        }
         return GenTL::GC_ERR_SUCCESS;
       }};
 }
@@ -121,10 +173,15 @@ PortModel::RegisterRegion *PortModel::find_region(std::uint64_t address,
 
 GenTL::GC_ERROR PortModel::read(std::uint64_t address, void *buffer,
                                 std::size_t *size) const {
-  if (buffer == nullptr || size == nullptr) {
+  if (size == nullptr) {
     return GenTL::GC_ERR_INVALID_PARAMETER;
   }
-  const RegisterRegion *region = find_region(address, *size);
+  const std::size_t requested = *size;
+  *size = 0U;
+  if (buffer == nullptr) {
+    return GenTL::GC_ERR_INVALID_PARAMETER;
+  }
+  const RegisterRegion *region = find_region(address, requested);
   if (region == nullptr) {
     return GenTL::GC_ERR_INVALID_ADDRESS;
   }
@@ -134,19 +191,29 @@ GenTL::GC_ERROR PortModel::read(std::uint64_t address, void *buffer,
 
   const std::uint64_t offset = address - region->address;
   if (region->access) {
-    return region->access(offset,
-                          {static_cast<std::byte *>(buffer), *size}, false);
+    const auto result = region->access(
+        offset, {static_cast<std::byte *>(buffer), requested}, false);
+    if (result != GenTL::GC_ERR_SUCCESS) {
+      return result;
+    }
+  } else if (requested != 0U) {
+    std::memcpy(buffer, region->data.data() + offset, requested);
   }
-  std::memcpy(buffer, region->data.data() + offset, *size);
+  *size = requested;
   return GenTL::GC_ERR_SUCCESS;
 }
 
 GenTL::GC_ERROR PortModel::write(std::uint64_t address, const void *buffer,
                                  std::size_t *size) {
-  if (buffer == nullptr || size == nullptr) {
+  if (size == nullptr) {
     return GenTL::GC_ERR_INVALID_PARAMETER;
   }
-  RegisterRegion *region = find_region(address, *size);
+  const std::size_t requested = *size;
+  *size = 0U;
+  if (buffer == nullptr) {
+    return GenTL::GC_ERR_INVALID_PARAMETER;
+  }
+  RegisterRegion *region = find_region(address, requested);
   if (region == nullptr) {
     return GenTL::GC_ERR_INVALID_ADDRESS;
   }
@@ -156,11 +223,16 @@ GenTL::GC_ERROR PortModel::write(std::uint64_t address, const void *buffer,
 
   const std::uint64_t offset = address - region->address;
   if (region->access) {
-    return region->access(offset,
-                          {static_cast<std::byte *>(const_cast<void *>(buffer)), *size},
-                          true);
+    const auto result = region->access(
+        offset, {static_cast<std::byte *>(const_cast<void *>(buffer)), requested},
+        true);
+    if (result != GenTL::GC_ERR_SUCCESS) {
+      return result;
+    }
+  } else if (requested != 0U) {
+    std::memcpy(region->data.data() + offset, buffer, requested);
   }
-  std::memcpy(region->data.data() + offset, buffer, *size);
+  *size = requested;
   return GenTL::GC_ERR_SUCCESS;
 }
 
@@ -172,7 +244,9 @@ std::unique_ptr<PortModel> make_embedded_xml_port(
       << "?SchemaVersion=1.1.0";
 
   std::vector<std::byte> bytes(xml.size());
-  std::memcpy(bytes.data(), xml.data(), xml.size());
+  if (!xml.empty()) {
+    std::memcpy(bytes.data(), xml.data(), xml.size());
+  }
   registers.push_back(PortModel::RegisterRegion{
       .address = xml_address,
       .data = std::move(bytes),
@@ -213,18 +287,14 @@ PortDescriptor make_descriptor(std::string id, std::string vendor,
 }
 
 std::filesystem::path cti_runtime_path(const std::filesystem::path &fallback) {
-  Dl_info info{};
-  if (dladdr(reinterpret_cast<const void *>(&cti_runtime_path), &info) == 0 ||
-      info.dli_fname == nullptr) {
-    if (fallback.empty()) {
-      return std::filesystem::current_path() / "producer.cti";
-    }
-    return fallback.is_absolute() ? fallback
-                                  : std::filesystem::current_path() / fallback;
+  if (!runtime_module_path.empty()) {
+    return runtime_module_path;
   }
-  std::error_code error;
-  const std::filesystem::path absolute = std::filesystem::absolute(info.dli_fname, error);
-  return error ? std::filesystem::path(info.dli_fname) : absolute;
+  if (fallback.empty()) {
+    return std::filesystem::current_path() / "producer.cti";
+  }
+  return fallback.is_absolute() ? fallback
+                                : std::filesystem::current_path() / fallback;
 }
 
 std::filesystem::path cti_runtime_directory() {
@@ -242,7 +312,7 @@ std::vector<PortUrlInfo> make_file_urls(std::initializer_list<XmlFileInfo> files
     const std::uint64_t file_size = exists && !error
         ? static_cast<std::uint64_t>(std::filesystem::file_size(absolute_path, error))
         : 0U;
-    urls.push_back(PortUrlInfo{.url = make_file_url(absolute_path),
+    urls.push_back(PortUrlInfo{.url = make_file_url(absolute_path, file),
                                .filename = absolute_path.filename().string(),
                                .schema_major = file.schema_major,
                                .schema_minor = file.schema_minor,

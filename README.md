@@ -1,12 +1,13 @@
 # GenTLProducerCore
 
 `GenTLProducerCore` is a vendor-SDK-free C++20 static library for GenTL
-producer implementations. It centralizes the phase-1 code that all current
-producers use while keeping each producer repository buildable with only its
-own vendor SDK.
+producer implementations. It centralizes vendor-neutral port and information
+code while keeping each producer repository buildable with only its own
+vendor SDK.
 
 The library contains no camera discovery, device control, buffer ownership, or
-vendor headers. It depends only on the GenICam `GenTL.h` header, `dl`, and the
+vendor headers. Its buffer information formatter consumes caller-supplied
+values and does not own buffer state or synchronization. It depends only on the GenICam `GenTL.h` header, `dl`, and the
 C++ standard library. The static library is PIC so a producer can link it into
 its `.cti` and deliver one self-contained transport-layer binary.
 
@@ -55,9 +56,15 @@ The complete dependency and distribution summary is in
 - embedded and on-disk XML URL helpers
 - CTI runtime path helpers using `dladdr`, with a caller fallback path
 - GenTL information sizing and copy helpers
+- `BufferInfo` / `info_buffer`: common `DSGetBufferInfo` response formatting for
+  contiguous little-endian PFNC images without chunks
 
 The full migration boundary and follow-on lifecycle extraction are in
-[docs/MIGRATION.md](docs/MIGRATION.md).
+[docs/MIGRATION.md](docs/MIGRATION.md). The buffer information API boundary,
+producer mappings, and verification are recorded in
+[docs/BUFFER_INFO_EXTRACTION.md](docs/BUFFER_INFO_EXTRACTION.md). The full
+corrective review, regressions, and hardware/vendor validation limits are in
+[docs/REVIEW.md](docs/REVIEW.md).
 
 ## Debian and Ubuntu package
 

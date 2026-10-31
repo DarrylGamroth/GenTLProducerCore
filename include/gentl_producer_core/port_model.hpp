@@ -52,12 +52,17 @@ struct PortDescriptor {
 
 class PortModel {
 public:
+  // Callers serialize data-backed accesses and custom callbacks, and keep
+  // callback captures alive. Callbacks transfer the complete span on success
+  // and no bytes on failure. Write callbacks consume the span without modifying
+  // the caller's input buffer.
   using AccessCallback = std::function<GenTL::GC_ERROR(
       std::uint64_t offset, std::span<std::byte> bytes, bool write)>;
 
   struct RegisterRegion {
     std::uint64_t address = 0;
     std::vector<std::byte> data;
+    // Zero selects data.size(); without a callback, size must fit the data.
     std::uint64_t size = 0;
     bool readable = true;
     bool writable = false;
@@ -90,6 +95,9 @@ using IntegerGetter = std::function<std::uint64_t()>;
 using IntegerSetter = std::function<GenTL::GC_ERROR(std::uint64_t)>;
 using StringGetter = std::function<std::string()>;
 
+// The helper serializes getter/setter calls, including partial read-modify-write.
+// They must not reenter this register or acquire locks held while accessing it.
+// A setter without a getter supports complete eight-byte writes only.
 PortModel::RegisterRegion integer_register(std::uint64_t address,
                                            IntegerGetter getter,
                                            IntegerSetter setter = {});

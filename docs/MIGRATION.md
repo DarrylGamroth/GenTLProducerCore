@@ -73,6 +73,16 @@ same CMake target and retain only their producer-specific module-port assembly.
 These are software and simulator/mock results. They do not qualify physical
 cameras, frame grabbers, vendor kernel drivers, timing, or transport behavior.
 
+## Buffer information extraction
+
+Version 0.1.2 adds `BufferInfo` and `info_buffer` for the common image-buffer
+information responses in SDK2 and SDK3. Producers still validate handles, hold
+their stream mutex, and choose values according to their own buffer state.
+The formatter has no SDK calls, handles, queues, ownership, or state transitions.
+Producer-specific query support stays local. triggered adoption is deferred.
+See [the extraction record](BUFFER_INFO_EXTRACTION.md) for the exact boundary,
+compatibility decisions, worktrees, and validation.
+
 ## Later lifecycle extraction
 
 Lifecycle code is intentionally deferred because the producers do not share a
