@@ -66,7 +66,7 @@ The complete dependency and distribution summary is in
 - CTI runtime path helpers using `dladdr`, with a caller fallback path
 - GenTL information sizing and copy helpers
 - `BufferInfo` / `info_buffer`: common `DSGetBufferInfo` response formatting for
-  contiguous little-endian PFNC images without chunks
+  contiguous PFNC images without chunks, with producer-described pixel byte order
 
 The full migration boundary and follow-on lifecycle extraction are in
 [docs/MIGRATION.md](docs/MIGRATION.md). The buffer information API boundary,
@@ -81,3 +81,13 @@ The containerized package build and artifact-export commands are documented in
 [`packaging/debian/README.md`](packaging/debian/README.md). The resulting
 `libgentl-producer-core-dev` package contains only development files; it does
 not install a runtime shared library.
+
+## Configurable stream descriptions, core 0.2.1
+
+Backends may opt into idle remote-write stream-description refresh. The runtime
+serializes those configuration transactions with stream lifecycle calls and
+preserves published buffer metadata across subsequent geometry changes.
+Pixel endianness and delivered image height are explicit metadata, and copy
+backends may report a frame-sequence increment independently of underruns.
+Defaults preserve the continuous producers' fixed-description behavior. See the
+0.2.1 section of [the runtime record](docs/RUNTIME_EXTRACTION.md).

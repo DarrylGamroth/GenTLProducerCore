@@ -165,6 +165,19 @@ gentl_producer_core::runtime::BufferHandleData *dequeue_input_buffer_locked(
   return buffer;
 }
 
+void snapshot_buffer_description_locked(DsHandleData *stream,
+                                        BufferHandleData *buffer) {
+  buffer->image = {.buffer_alignment = stream->current_buffer_alignment,
+                   .width = stream->current_width,
+                   .height = stream->current_height,
+                   .payload_size_bytes = stream->current_payload_size,
+                   .pixel_format = stream->current_pixel_format,
+                   .pixel_size_bits = stream->current_pixel_size_bits,
+                   .offset_x = stream->current_offset_x,
+                   .offset_y = stream->current_offset_y,
+                   .pixel_endianness = stream->current_pixel_endianness};
+}
+
 template <typename Container>
 std::vector<gentl_producer_core::runtime::EventHandleData *>
 retain_events_locked(const Container &source) {
@@ -332,16 +345,10 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
       buffer->awaiting_delivery = true;
       buffer->is_incomplete = frame_result.incomplete;
       buffer->size_filled = frame_result.bytes_filled;
-      buffer->image = {.buffer_alignment = stream->current_buffer_alignment,
-                       .width = stream->current_width,
-                       .height = stream->current_height,
-                       .payload_size_bytes = stream->current_payload_size,
-                       .pixel_format = stream->current_pixel_format,
-                       .pixel_size_bits = stream->current_pixel_size_bits,
-                       .offset_x = stream->current_offset_x,
-                       .offset_y = stream->current_offset_y};
+      snapshot_buffer_description_locked(stream, buffer);
       buffer->timestamp = frame_result.timestamp_ns;
-      buffer->frame_id = ++stream->frame_sequence;
+      stream->frame_sequence += frame_result.frame_id_increment;
+      buffer->frame_id = stream->frame_sequence;
       ++stream->delivered_count;
       stream->underrun_count += frame_result.skipped_frames;
       events = retain_events_locked(stream->new_buffer_events);
@@ -947,28 +954,24 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DevOpenDataStream(
   if (expected_id != sDataStreamID) {
     return gentl_producer_core::runtime::invalid_id("unknown data stream id");
   }
-  auto *stream = new gentl_producer_core::runtime::DsHandleData(device);
+  std::scoped_lock configuration_lock(device->configuration_mutex);
   {
     std::scoped_lock lock(device->mutex);
-    if (device->open_streams != 0U) {
-      delete stream;
+    if (device->open_stream != nullptr)
       return gentl_producer_core::runtime::resource_in_use(
           "Data Stream module is already open");
-    }
-    ++device->open_streams;
   }
   std::string error_text;
   gentl_producer_core::StreamDescription description;
-  if (gentl_producer_core::runtime::Runtime::instance().get_stream_description(
-          device->device, &description, &error_text)) {
-    stream->current_width = description.width;
-    stream->current_height = description.height;
-    stream->current_offset_x = description.offset_x;
-    stream->current_offset_y = description.offset_y;
-    stream->current_payload_size = description.payload_size_bytes;
-    stream->current_buffer_alignment = description.buffer_alignment;
-    stream->current_pixel_format = description.pixel_format;
-    stream->current_pixel_size_bits = description.pixel_size_bits;
+  if (!gentl_producer_core::runtime::Runtime::instance().get_stream_description(
+          device->device, &description, &error_text))
+    return gentl_producer_core::runtime::io_error(error_text);
+  auto *stream = new gentl_producer_core::runtime::DsHandleData(device);
+  gentl_producer_core::runtime::apply_stream_description_locked(stream,
+                                                                description);
+  {
+    std::scoped_lock lock(device->mutex);
+    device->open_stream = stream;
   }
   *phDataStream = stream;
   return GC_ERR_SUCCESS;
@@ -981,9 +984,10 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DevClose(DEV_HANDLE hDevice) {
   if (device == nullptr) {
     return gentl_producer_core::runtime::invalid_handle();
   }
+  std::unique_lock configuration_lock(device->configuration_mutex);
   {
     std::scoped_lock lock(device->mutex);
-    if (device->open_streams != 0U) {
+    if (device->open_stream != nullptr) {
       return gentl_producer_core::runtime::access_denied(
           "device has open data streams; close streams before DevClose");
     }
@@ -1008,6 +1012,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DevClose(DEV_HANDLE hDevice) {
     if (device->parent->open_devices != 0U)
       --device->parent->open_devices;
   }
+  configuration_lock.unlock();
   delete device;
   return GC_ERR_SUCCESS;
 }
@@ -1127,6 +1132,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSFlushQueue(DS_HANDLE hDataStream,
         buffer->awaiting_delivery = true;
         buffer->is_incomplete = true;
         buffer->size_filled = 0;
+        gentl_producer_core::runtime::snapshot_buffer_description_locked(
+            stream, buffer);
         moved_to_output.push_back(buffer);
       }
     } else if (iOperation == ACQ_QUEUE_ALL_TO_INPUT) {
@@ -1207,6 +1214,7 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
   if (iNumToAcquire == 0U) {
     return GC_ERR_INVALID_PARAMETER;
   }
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
   gentl_producer_core::StreamDescription description;
   std::string error_text;
   {
@@ -1241,14 +1249,8 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
             stream->parent->device, &error_text)) {
       return gentl_producer_core::runtime::io_error(error_text);
     }
-    stream->current_width = description.width;
-    stream->current_height = description.height;
-    stream->current_offset_x = description.offset_x;
-    stream->current_offset_y = description.offset_y;
-    stream->current_payload_size = description.payload_size_bytes;
-    stream->current_buffer_alignment = description.buffer_alignment;
-    stream->current_pixel_format = description.pixel_format;
-    stream->current_pixel_size_bits = description.pixel_size_bits;
+    gentl_producer_core::runtime::apply_stream_description_locked(stream,
+                                                                  description);
     stream->stop_requested = false;
     stream->worker_error.clear();
     stream->worker_running = true;
@@ -1257,12 +1259,12 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
     stream->acquisition_limit = iNumToAcquire;
     stream->delivered_count = 0;
     stream->started_count = 0;
+    {
+      std::scoped_lock device_lock(stream->parent->mutex);
+      stream->parent->acquisition_active = true;
+    }
     stream->worker =
         std::thread(gentl_producer_core::runtime::stream_worker, stream);
-  }
-  {
-    std::scoped_lock lock(stream->parent->mutex);
-    stream->parent->acquisition_active = true;
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),
@@ -1285,6 +1287,7 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
         "unsupported acquisition stop flag");
   }
 
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
   {
     std::scoped_lock lock(stream->mutex);
     if (!stream->acquisition_session_active) {
@@ -1404,6 +1407,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSClose(DS_HANDLE hDataStream) {
     return gentl_producer_core::runtime::invalid_handle();
   }
   auto *device = stream->parent;
+  std::scoped_lock configuration_lock(device->configuration_mutex);
   {
     std::scoped_lock lock(stream->mutex);
     stream->stop_requested = true;
@@ -1428,9 +1432,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSClose(DS_HANDLE hDataStream) {
   }
   {
     std::scoped_lock lock(device->mutex);
-    if (device->open_streams > 0U) {
-      --device->open_streams;
-    }
+    device->open_stream = nullptr;
+    device->acquisition_active = false;
   }
   delete stream;
   return GC_ERR_SUCCESS;
@@ -1485,8 +1488,11 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSQueueBuffer(DS_HANDLE hDataStream,
     return gentl_producer_core::runtime::resource_in_use(
         "buffer is already owned by a stream queue");
   }
+  if (buffer->size < stream->current_payload_size)
+    return GC_ERR_BUFFER_TOO_SMALL;
   buffer->is_queued = true;
   buffer->has_new_data = false;
+  buffer->is_incomplete = false;
   buffer->awaiting_delivery = false;
   buffer->size_filled = 0;
   stream->input_queue.push_back(buffer);
@@ -1506,6 +1512,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetBufferInfo(
   }
 
   std::scoped_lock lock(stream->mutex);
+  const bool has_snapshot = buffer->has_new_data || buffer->is_incomplete;
   const gentl_producer_core::BufferInfo info{
       .base = buffer->base,
       .size = buffer->size,
@@ -1520,15 +1527,26 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetBufferInfo(
                      .backend_info()
                      .tl_type,
       .size_filled = buffer->size_filled,
-      .width = buffer->image.width,
-      .height = buffer->image.height,
-      .x_offset = buffer->image.offset_x,
-      .y_offset = buffer->image.offset_y,
+      .width = has_snapshot ? buffer->image.width : stream->current_width,
+      .height = has_snapshot ? buffer->image.height : stream->current_height,
+      // Partial payloads do not establish which rows are complete.
+      .delivered_image_height =
+          buffer->image.payload_size_bytes != 0 &&
+                  buffer->size_filled >= buffer->image.payload_size_bytes
+              ? buffer->image.height
+              : 0,
+      .x_offset =
+          has_snapshot ? buffer->image.offset_x : stream->current_offset_x,
+      .y_offset =
+          has_snapshot ? buffer->image.offset_y : stream->current_offset_y,
       .x_padding = 0,
       .y_padding = 0,
       .frame_id = buffer->frame_id,
       .image_present = buffer->size_filled != 0,
-      .pixel_format = buffer->image.pixel_format,
+      .pixel_format = has_snapshot ? buffer->image.pixel_format
+                                   : stream->current_pixel_format,
+      .pixel_endianness = has_snapshot ? buffer->image.pixel_endianness
+                                       : stream->current_pixel_endianness,
       .data_size = buffer->has_new_data ? buffer->image.payload_size_bytes : 0};
   return gentl_producer_core::info_buffer(info, iInfoCmd, piType, pBuffer,
                                           piSize);

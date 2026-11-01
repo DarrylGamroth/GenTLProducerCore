@@ -71,6 +71,7 @@ int main() {
       {BUFFER_INFO_SIZE_FILLED, 48},
       {BUFFER_INFO_WIDTH, 8},
       {BUFFER_INFO_HEIGHT, 3},
+      {BUFFER_INFO_DELIVERED_IMAGEHEIGHT, 0},
       {BUFFER_INFO_XOFFSET, 2},
       {BUFFER_INFO_YOFFSET, 5},
       {BUFFER_INFO_XPADDING, 4},
@@ -92,6 +93,13 @@ int main() {
     check<std::uint64_t>(info, command, INFO_DATATYPE_UINT64, value);
   check<std::int32_t>(info, BUFFER_INFO_PIXEL_ENDIANNESS, INFO_DATATYPE_INT32,
                       PIXELENDIANNESS_LITTLE);
+
+  info.pixel_endianness = PIXELENDIANNESS_UNKNOWN;
+  check<std::int32_t>(info, BUFFER_INFO_PIXEL_ENDIANNESS, INFO_DATATYPE_INT32,
+                      PIXELENDIANNESS_UNKNOWN);
+  info.delivered_image_height = 2;
+  check<std::size_t>(info, BUFFER_INFO_DELIVERED_IMAGEHEIGHT,
+                     INFO_DATATYPE_SIZET, 2);
 
   // The producer supplies these decisions independently. No lifecycle is
   // inferred by the formatter from size_filled or any other flag.
@@ -133,10 +141,9 @@ int main() {
   assert(size == 7 && std::string(text.data()) == "Custom" && text[7] == '!');
 
   // Queries that only SDK3 implements must remain outside the common set.
-  for (const auto command :
-       {BUFFER_INFO_DELIVERED_IMAGEHEIGHT, BUFFER_INFO_CHUNKLAYOUTID,
-        BUFFER_INFO_FILENAME, BUFFER_INFO_DATA_LARGER_THAN_BUFFER,
-        BUFFER_INFO_IS_COMPOSITE, BUFFER_INFO_CUSTOM_ID}) {
+  for (const auto command : {BUFFER_INFO_CHUNKLAYOUTID, BUFFER_INFO_FILENAME,
+                             BUFFER_INFO_DATA_LARGER_THAN_BUFFER,
+                             BUFFER_INFO_IS_COMPOSITE, BUFFER_INFO_CUSTOM_ID}) {
     type = INFO_DATATYPE_UNKNOWN;
     size = text.size();
     assert(info_buffer(info, command, &type, text.data(), &size) ==

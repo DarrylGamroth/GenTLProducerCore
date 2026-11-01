@@ -67,6 +67,47 @@ are private migration boundaries, not new public camera concepts.
 The additive runtime APIs require core 0.2.0. Producers depend on that version;
 older installed core packages must fail configuration explicitly.
 
+## Stream configuration updates, core 0.2.1
+
+`ProducerBackend::remote_write_changes_stream_description(address, size)` opts
+into a description refresh after successful idle remote writes. Its default
+is false, so fixed-description producers incur no additional backend queries.
+The name uses the existing remote-write operation and `StreamDescription`
+contract. The backend owns register interpretation and feature access rules;
+the runtime does not parse provider XML or identify geometry registers.
+
+Each device's configuration mutex serializes remote writes and description
+publication with host stream opening, start, stop and close. Lock order is
+configuration, then stream/lifecycle, then backend. Workers do not acquire the
+configuration mutex, so a host stop may join them while holding it. The runtime
+tracks the single open stream directly and publishes refreshed description
+fields under that stream's mutex. A failed description query prevents stream
+opening without reserving the module.
+
+Published buffers, including incomplete zero-byte buffers, retain their captured
+image description. Unfilled buffers
+report the current stream description, and queueing rejects a buffer smaller
+than the current payload. `BufferInfo::delivered_image_height` maps the GenTL
+`BUFFER_INFO_DELIVERED_IMAGEHEIGHT` query. Copy acquisition reports full height
+only when delivered bytes cover the captured nonzero payload; a partial payload
+reports zero because the backend does not identify complete rows. Queued
+acquisition retains its existing delivered-height handling.
+
+`StreamDescription::pixel_endianness` and `BufferInfo::pixel_endianness` use
+GenTL's `PIXELENDIANNESS` values and default to `PIXELENDIANNESS_LITTLE`.
+Backends can describe unknown byte order explicitly without a producer-specific
+information-query override. The field follows the same snapshot rules as
+pixel format. `AcquireFrameResult::frame_id_increment` lets copy backends
+report the frame-sequence advance independently from the skipped-frame counter;
+its default of one preserves contiguous numbering.
+
+SDK-free synthetic tests exercise both ownership models: description failures,
+idle-write publication through ABI and module registers, old-buffer snapshots,
+unfilled geometry, opt-out query counts, payload validation, stop/join and a
+controlled description/start versus remote-write interleaving. Formatter tests
+also cover delivered height and unknown pixel endianness. Concurrent handle
+destruction remains outside this change's lifetime guarantees.
+
 ## Implementation and acceptance
 
 1. Move SDK-neutral descriptors/contracts and error reporting to core headers.

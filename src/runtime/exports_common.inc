@@ -578,6 +578,14 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE GCWritePort(PORT_HANDLE hPort,
     return gentl_producer_core::runtime::invalid_handle();
   }
   auto *port = gentl_producer_core::runtime::Runtime::as_port(hPort);
+  const bool remote_device =
+      port != nullptr &&
+      port->port_kind == gentl_producer_core::runtime::PortKind::kRemoteDevice;
+  std::unique_lock<std::mutex> configuration_lock;
+  if (remote_device)
+    configuration_lock =
+        std::unique_lock<std::mutex>(port->owner->configuration_mutex);
+
   if (port != nullptr &&
       port->port_kind ==
           gentl_producer_core::runtime::PortKind::kRemoteDevice &&
@@ -606,8 +614,23 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE GCWritePort(PORT_HANDLE hPort,
         port->port_kind ==
             gentl_producer_core::runtime::PortKind::kRemoteDevice &&
         piSize != nullptr) {
-      auto features = gentl_producer_core::runtime::Runtime::instance()
-                          .remote_invalidated_features(iAddress, *piSize);
+      auto &runtime = gentl_producer_core::runtime::Runtime::instance();
+      bool acquiring;
+      {
+        std::scoped_lock lock(port->owner->mutex);
+        acquiring = port->owner->acquisition_active;
+      }
+      if (!acquiring &&
+          runtime.remote_write_changes_stream_description(iAddress, *piSize)) {
+        gentl_producer_core::StreamDescription description;
+        std::string error_text;
+        if (!runtime.get_stream_description(port->owner->device, &description,
+                                            &error_text))
+          return gentl_producer_core::runtime::io_error(error_text);
+        gentl_producer_core::runtime::publish_stream_description(port->owner,
+                                                                 description);
+      }
+      auto features = runtime.remote_invalidated_features(iAddress, *piSize);
       if (!features.empty()) {
         gentl_producer_core::runtime::publish_port_feature_invalidations(
             port, features);

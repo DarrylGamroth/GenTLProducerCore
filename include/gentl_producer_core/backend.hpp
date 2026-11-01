@@ -47,6 +47,7 @@ struct StreamDescription {
   std::size_t offset_y = 0;
   std::size_t x_padding_bytes = 0;
   std::size_t y_padding_bytes = 0;
+  std::int32_t pixel_endianness = GenTL::PIXELENDIANNESS_LITTLE;
 };
 
 enum class AcquireFrameStatus {
@@ -62,6 +63,8 @@ struct AcquireFrameResult {
   std::uint64_t timestamp_ns = 0;
   bool incomplete = false;
   std::uint64_t skipped_frames = 0;
+  // Copy acquisition sequence advance, independent from underrun accounting.
+  std::uint64_t frame_id_increment = 1;
 };
 
 // Operational success and memory retirement are independent: a camera stop
@@ -88,6 +91,13 @@ public:
 
   virtual bool remote_write_requires_idle(std::uint64_t address,
                                           std::size_t size) const = 0;
+  // Return true when an idle remote write can change the stream description.
+  // The runtime refreshes it after the write while serializing host lifecycle
+  // operations. The default avoids extra backend queries for fixed geometry.
+  virtual bool remote_write_changes_stream_description(std::uint64_t,
+                                                       std::size_t) const {
+    return false;
+  }
   virtual std::vector<std::string>
   remote_invalidated_features(std::uint64_t address,
                               std::size_t size) const = 0;

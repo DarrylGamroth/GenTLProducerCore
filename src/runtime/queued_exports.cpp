@@ -208,6 +208,7 @@ void snapshot_buffer_description_locked(
   buffer->y_padding = stream->current_y_padding;
   buffer->pixel_format = stream->current_pixel_format;
   buffer->pixel_size_bits = stream->current_pixel_size_bits;
+  buffer->pixel_endianness = stream->current_pixel_endianness;
   buffer->payload_size = stream->current_payload_size;
 }
 
@@ -469,7 +470,7 @@ void detach_event_from_source(EventHandleData *event) {
   unregister_event_from_source(event);
 }
 
-GenTL::GC_ERROR close_stream_handle(DsHandleData *stream) {
+GenTL::GC_ERROR close_stream_handle_locked(DsHandleData *stream) {
   std::unique_lock lifecycle_lock(stream->lifecycle_mutex);
   auto *device = stream->parent;
   StopResult stopped;
@@ -520,13 +521,14 @@ GenTL::GC_ERROR close_stream_handle(DsHandleData *stream) {
 }
 
 GenTL::GC_ERROR close_device_handle(DevHandleData *device) {
+  std::unique_lock configuration_lock(device->configuration_mutex);
   DsHandleData *stream = nullptr;
   {
     std::scoped_lock lock(device->mutex);
     stream = device->open_stream;
   }
   if (stream != nullptr) {
-    const auto result = close_stream_handle(stream);
+    const auto result = close_stream_handle_locked(stream);
     if (result != GenTL::GC_ERR_SUCCESS) return result;
   }
 
@@ -558,6 +560,7 @@ GenTL::GC_ERROR close_device_handle(DevHandleData *device) {
                                            parent->open_devices.end(), device),
                                parent->open_devices.end());
   }
+  configuration_lock.unlock();
   delete device;
   return GenTL::GC_ERR_SUCCESS;
 }
@@ -1154,30 +1157,24 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DevOpenDataStream(
   if (expected_id != sDataStreamID) {
     return gentl_producer_core::runtime::invalid_id("unknown data stream id");
   }
-  auto *stream = new gentl_producer_core::runtime::DsHandleData(device);
+  std::scoped_lock configuration_lock(device->configuration_mutex);
   {
     std::scoped_lock lock(device->mutex);
-    if (device->open_stream != nullptr) {
-      delete stream;
+    if (device->open_stream != nullptr)
       return gentl_producer_core::runtime::resource_in_use(
           "Data Stream module is already open");
-    }
-    device->open_stream = stream;
   }
   std::string error_text;
   gentl_producer_core::StreamDescription description;
-  if (gentl_producer_core::runtime::Runtime::instance().get_stream_description(
-          device->device, &description, &error_text)) {
-    stream->current_width = description.width;
-    stream->current_height = description.height;
-    stream->current_x_offset = description.offset_x;
-    stream->current_y_offset = description.offset_y;
-    stream->current_x_padding = description.x_padding_bytes;
-    stream->current_y_padding = description.y_padding_bytes;
-    stream->current_payload_size = description.payload_size_bytes;
-    stream->current_buffer_alignment = description.buffer_alignment;
-    stream->current_pixel_format = description.pixel_format;
-    stream->current_pixel_size_bits = description.pixel_size_bits;
+  if (!gentl_producer_core::runtime::Runtime::instance().get_stream_description(
+          device->device, &description, &error_text))
+    return gentl_producer_core::runtime::io_error(error_text);
+  auto *stream = new gentl_producer_core::runtime::DsHandleData(device);
+  gentl_producer_core::runtime::apply_stream_description_locked(stream,
+                                                                description);
+  {
+    std::scoped_lock lock(device->mutex);
+    device->open_stream = stream;
   }
   *phDataStream = stream;
   return GC_ERR_SUCCESS;
@@ -1404,6 +1401,7 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
   if (iNumToAcquire == 0U) {
     return GC_ERR_INVALID_PARAMETER;
   }
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
   std::scoped_lock lifecycle_lock(stream->lifecycle_mutex);
   gentl_producer_core::StreamDescription description;
   std::string error_text;
@@ -1439,16 +1437,8 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
             stream->parent->device, &error_text)) {
       return gentl_producer_core::runtime::io_error(error_text);
     }
-    stream->current_width = description.width;
-    stream->current_height = description.height;
-    stream->current_x_offset = description.offset_x;
-    stream->current_y_offset = description.offset_y;
-    stream->current_x_padding = description.x_padding_bytes;
-    stream->current_y_padding = description.y_padding_bytes;
-    stream->current_payload_size = description.payload_size_bytes;
-    stream->current_buffer_alignment = description.buffer_alignment;
-    stream->current_pixel_format = description.pixel_format;
-    stream->current_pixel_size_bits = description.pixel_size_bits;
+    gentl_producer_core::runtime::apply_stream_description_locked(stream,
+                                                                  description);
     stream->stop_attempted = false;
     stream->stop_result = {false, false};
     stream->stop_error.clear();
@@ -1489,6 +1479,7 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
         "unsupported acquisition stop flag");
   }
 
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
   std::scoped_lock lifecycle_lock(stream->lifecycle_mutex);
   gentl_producer_core::StopResult result;
   bool retry_completed_stop = false;
@@ -1651,7 +1642,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSClose(DS_HANDLE hDataStream) {
   if (stream == nullptr) {
     return gentl_producer_core::runtime::invalid_handle();
   }
-  return gentl_producer_core::runtime::close_stream_handle(stream);
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
+  return gentl_producer_core::runtime::close_stream_handle_locked(stream);
 }
 
 GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSRevokeBuffer(DS_HANDLE hDataStream,
@@ -1709,8 +1701,11 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSQueueBuffer(DS_HANDLE hDataStream,
     return gentl_producer_core::runtime::resource_in_use(
         "buffer is already owned by a stream queue");
   }
+  if (buffer->size < stream->current_payload_size)
+    return GC_ERR_BUFFER_TOO_SMALL;
   buffer->is_queued = true;
   buffer->has_new_data = false;
+  buffer->is_incomplete = false;
   buffer->awaiting_delivery = false;
   buffer->size_filled = 0;
   stream->input_queue.push_back(buffer);
@@ -1748,6 +1743,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetBufferInfo(
   default:
     break;
   }
+  const bool has_snapshot = buffer->has_new_data || buffer->is_incomplete;
   const gentl_producer_core::BufferInfo info{
       .base = buffer->base,
       .size = buffer->size,
@@ -1762,15 +1758,18 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetBufferInfo(
                      .backend_info()
                      .tl_type,
       .size_filled = buffer->size_filled,
-      .width = buffer->width,
-      .height = buffer->height,
-      .x_offset = buffer->x_offset,
-      .y_offset = buffer->y_offset,
-      .x_padding = buffer->x_padding,
-      .y_padding = buffer->y_padding,
+      .width = has_snapshot ? buffer->width : stream->current_width,
+      .height = has_snapshot ? buffer->height : stream->current_height,
+      .x_offset = has_snapshot ? buffer->x_offset : stream->current_x_offset,
+      .y_offset = has_snapshot ? buffer->y_offset : stream->current_y_offset,
+      .x_padding = has_snapshot ? buffer->x_padding : stream->current_x_padding,
+      .y_padding = has_snapshot ? buffer->y_padding : stream->current_y_padding,
       .frame_id = buffer->frame_id,
       .image_present = buffer->size_filled != 0,
-      .pixel_format = buffer->pixel_format,
+      .pixel_format =
+          has_snapshot ? buffer->pixel_format : stream->current_pixel_format,
+      .pixel_endianness = has_snapshot ? buffer->pixel_endianness
+                                       : stream->current_pixel_endianness,
       .data_size = buffer->has_new_data ? buffer->payload_size : 0};
   return gentl_producer_core::info_buffer(info, iInfoCmd, piType, pBuffer,
                                           piSize);

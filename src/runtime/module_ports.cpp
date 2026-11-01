@@ -35,6 +35,35 @@ std::uint64_t device_access_value(GenTL::DEVICE_ACCESS_FLAGS access) {
 
 } // namespace
 
+void apply_stream_description_locked(DsHandleData *stream,
+                                     const StreamDescription &description) {
+  stream->current_width = description.width;
+  stream->current_height = description.height;
+#if defined(GENTL_RUNTIME_COPY)
+  stream->current_offset_x = description.offset_x;
+  stream->current_offset_y = description.offset_y;
+#else
+  stream->current_x_offset = description.offset_x;
+  stream->current_y_offset = description.offset_y;
+  stream->current_x_padding = description.x_padding_bytes;
+  stream->current_y_padding = description.y_padding_bytes;
+#endif
+  stream->current_payload_size = description.payload_size_bytes;
+  stream->current_buffer_alignment = description.buffer_alignment;
+  stream->current_pixel_format = description.pixel_format;
+  stream->current_pixel_size_bits = description.pixel_size_bits;
+  stream->current_pixel_endianness = description.pixel_endianness;
+}
+
+void publish_stream_description(DevHandleData *device,
+                                const StreamDescription &description) {
+  // Stream lifetime is protected by the caller's configuration lock.
+  if (auto *stream = device->open_stream) {
+    std::scoped_lock lock(stream->mutex);
+    apply_stream_description_locked(stream, description);
+  }
+}
+
 // Shared TL/interface/device module assembly.
 
 std::unique_ptr<PortModel> make_if_port_model(const BackendInfo &backend_info,

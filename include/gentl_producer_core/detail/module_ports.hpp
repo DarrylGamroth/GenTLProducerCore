@@ -23,6 +23,13 @@ using gentl_producer_core::make_embedded_xml_port;
 using gentl_producer_core::make_file_urls;
 using gentl_producer_core::string_register;
 
+// Caller holds the device configuration mutex and, when changing a stream,
+// its mutex. Workers never acquire the configuration mutex.
+void apply_stream_description_locked(DsHandleData *stream,
+                                     const StreamDescription &description);
+void publish_stream_description(DevHandleData *device,
+                                const StreamDescription &description);
+
 std::unique_ptr<PortModel> make_tl_port_model(const BackendInfo &backend_info,
                                               TlHandleData *system);
 std::unique_ptr<PortModel> make_if_port_model(const BackendInfo &backend_info,

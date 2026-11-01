@@ -55,6 +55,9 @@ GenTL::GC_ERROR info_buffer(const BufferInfo &info,
   case BUFFER_INFO_HEIGHT:
     return info_scalar<size_t>(info.height, INFO_DATATYPE_SIZET, type, buffer,
                                size);
+  case BUFFER_INFO_DELIVERED_IMAGEHEIGHT:
+    return info_scalar<size_t>(info.delivered_image_height, INFO_DATATYPE_SIZET,
+                               type, buffer, size);
   case BUFFER_INFO_XOFFSET:
     return info_scalar<size_t>(info.x_offset, INFO_DATATYPE_SIZET, type, buffer,
                                size);
@@ -80,7 +83,7 @@ GenTL::GC_ERROR info_buffer(const BufferInfo &info,
     return info_scalar<size_t>(PAYLOAD_TYPE_IMAGE, INFO_DATATYPE_SIZET, type,
                                buffer, size);
   case BUFFER_INFO_PIXEL_ENDIANNESS:
-    return info_scalar<int32_t>(PIXELENDIANNESS_LITTLE, INFO_DATATYPE_INT32,
+    return info_scalar<int32_t>(info.pixel_endianness, INFO_DATATYPE_INT32,
                                 type, buffer, size);
   case BUFFER_INFO_DATA_SIZE:
     return info_scalar<size_t>(info.data_size, INFO_DATATYPE_SIZET, type,

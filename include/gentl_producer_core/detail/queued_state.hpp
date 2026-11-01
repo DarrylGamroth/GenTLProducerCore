@@ -81,6 +81,7 @@ struct DevHandleData final : BaseHandle {
   DeviceDescriptor device;
   GenTL::DEVICE_ACCESS_FLAGS access = GenTL::DEVICE_ACCESS_NONE;
   std::mutex mutex;
+  std::mutex configuration_mutex;
   struct DsHandleData *open_stream = nullptr;
   bool acquisition_active = false;
   std::uint64_t stream_selector = 0;
@@ -133,6 +134,7 @@ struct DsHandleData final : BaseHandle {
   std::size_t current_buffer_alignment = 1;
   std::uint32_t current_pixel_format = 0;
   std::uint32_t current_pixel_size_bits = 0;
+  std::int32_t current_pixel_endianness = GenTL::PIXELENDIANNESS_LITTLE;
   std::string worker_error;
   std::vector<EventHandleData *> new_buffer_events;
 };
@@ -164,6 +166,7 @@ struct BufferHandleData final : BaseHandle {
   std::size_t y_padding = 0;
   std::uint64_t pixel_format = 0;
   std::uint32_t pixel_size_bits = 0;
+  std::int32_t pixel_endianness = GenTL::PIXELENDIANNESS_LITTLE;
 };
 
 struct EventHandleData final : BaseHandle {
@@ -211,6 +214,10 @@ public:
 
   bool remote_write_requires_idle(std::uint64_t address, std::size_t size) const {
     return backend_->remote_write_requires_idle(address, size);
+  }
+  bool remote_write_changes_stream_description(std::uint64_t address,
+                                               std::size_t size) const {
+    return backend_->remote_write_changes_stream_description(address, size);
   }
   std::vector<std::string> remote_invalidated_features(
       std::uint64_t address, std::size_t size) const {

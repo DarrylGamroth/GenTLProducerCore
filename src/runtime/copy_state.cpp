@@ -196,7 +196,8 @@ BufferHandleData::BufferHandleData(DsHandleData *in_parent, void *in_base,
             .pixel_format = in_parent->current_pixel_format,
             .pixel_size_bits = in_parent->current_pixel_size_bits,
             .offset_x = in_parent->current_offset_x,
-            .offset_y = in_parent->current_offset_y} {
+            .offset_y = in_parent->current_offset_y,
+            .pixel_endianness = in_parent->current_pixel_endianness} {
   if (producer_owned) {
     const auto alignment = parent->current_buffer_alignment;
     auto storage_size = size + (alignment - 1U);

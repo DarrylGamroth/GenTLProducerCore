@@ -8,7 +8,7 @@
 
 namespace gentl_producer_core {
 
-// Caller-supplied values for contiguous, little-endian PFNC image buffers
+// Caller-supplied values for contiguous PFNC image buffers
 // without chunk data. This does not own memory or determine buffer lifecycle.
 struct BufferInfo {
   void *base = nullptr;
@@ -23,6 +23,7 @@ struct BufferInfo {
   std::size_t size_filled = 0;
   std::size_t width = 0;
   std::size_t height = 0;
+  std::size_t delivered_image_height = 0;
   std::size_t x_offset = 0;
   std::size_t y_offset = 0;
   std::size_t x_padding = 0;
@@ -30,6 +31,7 @@ struct BufferInfo {
   std::uint64_t frame_id = 0;
   bool image_present = false;
   std::uint64_t pixel_format = 0;
+  std::int32_t pixel_endianness = GenTL::PIXELENDIANNESS_LITTLE;
   std::size_t data_size = 0;
 };
 
