@@ -91,3 +91,70 @@ Pixel endianness and delivered image height are explicit metadata, and copy
 backends may report a frame-sequence increment independently of underruns.
 Defaults preserve the continuous producers' fixed-description behavior. See the
 0.2.1 section of [the runtime record](docs/RUNTIME_EXTRACTION.md).
+
+## Native buffer revocation, core 0.2.2
+
+Queued backends may override `revoke_buffer(device, buffer, error_text)` when
+completed buffers remain registered with a native pool. `DSRevokeBuffer` calls
+this hook before releasing the handle or storage; rejection returns
+`GC_ERR_BUSY` and preserves both. The default permits revocation. Calls are
+serialized with stream lifecycle and queue submission. A stop that reports
+`buffers_released` must retire every native mapping, because stream close can
+then destroy all announced storage without individual revocation calls.
+
+## Completion order, core 0.2.3
+
+Queued backends default to `BufferCompletionOrder::kFifo`: `wait_frame` must
+return the oldest submitted address, preserving existing SDK3 behavior.
+Override `completion_order(device)` to return `kAny` when a backend can complete
+any currently submitted address. The runtime snapshots the mode at acquisition
+start, validates the returned address against outstanding submissions, and
+publishes events/metadata in backend completion order. Each submission permits
+one completion. Null, unknown, duplicate and announced-but-unsubmitted addresses
+stop acquisition and require normal backend retirement.
+
+In `kAny` mode all available input buffers are submitted, including when fewer
+finite deliveries remain than there are buffers. A native fixed ring may need
+every consumer return to release its retirement frontier. Only the requested
+number of frames is published; remaining submissions stay borrowed until an
+explicit `buffers_released` stop result. All outstanding addresses are treated
+as potentially acquiring. KILL returns them to input after retirement without
+inventing a single active-head incomplete event. Default FIFO behavior is
+unchanged, including its finite submission cap and KILL head event.
+
+The `kAny` worker requires nonblocking `wait_frame(timeout_ms=0)` polls. Without
+completion notifications it retains the interruptible 100 µs polling fallback.
+This avoids withholding returned ring buffers behind a long backend wait.
+
+## Completion notifications, core 0.2.4
+
+An optional `set_completion_callback(device, callback)` lets a `kAny` backend
+replace timed polling with notifications. The default returns false. Opted-in
+backends must notify after publishing a completion or entering a fault/stopped
+state, and allow nonblocking status checks even when no addresses are currently
+submitted. Empty callbacks unregister; registration/replacement synchronize
+with callback invocation. Callbacks must not block, throw or re-enter the backend.
+
+The worker snapshots a shared generation counter before checking input and
+completion readiness, then uses atomic wait if no work is ready. Completion,
+consumer queue/flush, stop and close all advance that counter. Notifications
+before parking cannot be lost; bursts can coalesce because readiness persists.
+Callbacks capture only shared wake state, never the stream. They are cleared
+after joined retirement (or failed start), preserving lifetime on failed cleanup.
+No periodic timer or helper thread is used for this path. FIFO, copy and
+unsupported-callback fallback behavior remain unchanged. Hardware scheduling and
+backend work still determine latency; this is not a measured latency bound.
+
+Copy backends are unaffected. No producer has to opt in except one requiring
+this completion contract. Rebuild queued CTIs with matching core headers and
+static archives. See [the ordering review](docs/COMPLETION_ORDER.md) for ownership,
+compatibility checks and remaining hardware/timing limits.
+
+
+## Native buffer pools, core 0.2.5
+
+A queued backend can expose a fixed producer-owned pool through
+`DSAllocAndAnnounceBuffer`. The stream reports the required announcement
+count and rejects consumer allocations. Mapped addresses remain valid across
+stop and restart. After retiring DMA, the backend releases the mappings on
+stream close. Consumers return buffers individually with `DSQueueBuffer`.

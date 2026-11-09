@@ -14,6 +14,8 @@ struct Faults {
   std::mutex mutex;
   std::condition_variable condition;
   std::vector<void *> borrowed;
+  std::vector<void *> mapped;
+  bool retain_completed_mapping = false;
   Failure failure = Failure::none;
   bool release_wait = false;
   bool host_stopped = false;
@@ -34,7 +36,10 @@ struct Faults {
 } faults;
 class FaultBackend final : public QueuedBackend {
 public:
-  ~FaultBackend() override { assert(faults.borrowed.empty()); }
+  ~FaultBackend() override {
+    assert(faults.borrowed.empty());
+    assert(faults.mapped.empty());
+  }
   const BackendInfo &info() const override {
     static const BackendInfo value = [] {
       BackendInfo v; v.system_id = "system"; v.interface_id = "interface"; return v;
@@ -71,7 +76,10 @@ public:
     ++faults.stops; faults.host_stopped = true;
     faults.completed_at_stop = faults.completed;
     if (faults.operational_success) faults.camera_started = false;
-    if (!faults.retain) faults.borrowed.clear();
+    if (!faults.retain) {
+      faults.borrowed.clear();
+      faults.mapped.clear();
+    }
     *error = faults.operational_success ? "" : "injected stop failure";
     faults.condition.notify_all();
     return {faults.operational_success, !faults.retain};
@@ -83,7 +91,20 @@ public:
     if (faults.failure == Failure::queue && faults.queued == 2) {
       *error = "queue failed"; faults.condition.notify_all(); return false;
     }
-    faults.borrowed.push_back(base); faults.condition.notify_all(); return true;
+    faults.borrowed.push_back(base);
+    if (faults.retain_completed_mapping) faults.mapped.push_back(base);
+    faults.condition.notify_all(); return true;
+  }
+  bool revoke_buffer(const DeviceDescriptor &device, void *buffer,
+                     std::string *error) override {
+    std::scoped_lock lock(faults.mutex);
+    if (!faults.retain_completed_mapping)
+      return QueuedBackend::revoke_buffer(device, buffer, error);
+    if (std::ranges::find(faults.mapped, buffer) != faults.mapped.end()) {
+      *error = "buffer remains mapped in native pool";
+      return false;
+    }
+    return true;
   }
   bool wait_frame(const DeviceDescriptor &, std::uint64_t timeout_ms, AcquireFrameResult *v,
                   std::string *error) override {
@@ -132,7 +153,8 @@ struct Session {
   TL_HANDLE tl{}; IF_HANDLE iface{}; DEV_HANDLE dev{}; DS_HANDLE ds{};
   BUFFER_HANDLE buffers[2]{};
   Session(Failure failure = Failure::none, std::uint64_t count = GENTL_INFINITE,
-          bool hold_wait = false) {
+          bool hold_wait = false, bool retain_completed_mapping = false) {
+    faults.retain_completed_mapping = retain_completed_mapping;
     faults.hold_wait = hold_wait;
     faults.failure = failure; faults.retain = true; faults.operational_success = false;
     assert(GCInitLib() == GC_ERR_SUCCESS);
@@ -206,6 +228,58 @@ void await_stop_request(DS_HANDLE handle) {
   }
 }
 int main() {
+  for (bool native_pool : {false, true}) {
+    Session s(Failure::none, GENTL_INFINITE, false, native_pool);
+    EVENT_HANDLE event{};
+    assert(GCRegisterEvent(s.ds, EVENT_NEW_BUFFER, &event) == GC_ERR_SUCCESS);
+    {
+      std::scoped_lock lock(faults.mutex);
+      faults.release_wait = true;
+      faults.condition.notify_all();
+    }
+    EVENT_NEW_BUFFER_DATA data{};
+    std::size_t length = sizeof(data);
+    assert(EventGetData(event, &data, &length, 1000) == GC_ERR_SUCCESS);
+    auto *buffer = Runtime::as_buffer(data.BufferHandle);
+    auto *base = buffer->base;
+    void *returned_base = base;
+    void *returned_private = base;
+    const auto revoked = DSRevokeBuffer(s.ds, data.BufferHandle,
+                                         &returned_base, &returned_private);
+    if (native_pool) {
+      assert(revoked == GC_ERR_BUSY);
+      assert(returned_base == base && returned_private == base);
+      const auto error = Runtime::instance().last_error();
+      assert(error.first == GC_ERR_BUSY &&
+             error.second == "buffer remains mapped in native pool");
+      // A rejected revoke preserves both the handle and producer-owned memory.
+      INFO_DATATYPE type{};
+      std::size_t size = 0;
+      length = sizeof(size);
+      assert(DSGetBufferInfo(s.ds, data.BufferHandle, BUFFER_INFO_SIZE,
+                             &type, &size, &length) == GC_ERR_SUCCESS);
+      assert(size == 16 && Runtime::as_buffer(data.BufferHandle)->base == base);
+      static_cast<unsigned char *>(base)[15] = 0xa5;
+    } else {
+      assert(revoked == GC_ERR_SUCCESS);
+      assert(returned_base == nullptr && returned_private == nullptr);
+    }
+    s.allow_retirement();
+    assert(DSStopAcquisition(s.ds, ACQ_STOP_FLAGS_DEFAULT) == GC_ERR_SUCCESS);
+    if (native_pool)
+      assert(DSRevokeBuffer(s.ds, data.BufferHandle, nullptr, nullptr) == GC_ERR_SUCCESS);
+    assert(EventKill(event) == GC_ERR_SUCCESS);
+    s.finish();
+  }
+  {
+    Session s(Failure::none, GENTL_INFINITE, false, true);
+    s.allow_retirement();
+    // Close retires native mappings before freeing all announced storage,
+    // including buffers that never received individual revoke calls.
+    assert(DSClose(s.ds) == GC_ERR_SUCCESS);
+    assert(faults.mapped.empty() && faults.borrowed.empty());
+    s.finish();
+  }
   for (auto flag : {ACQ_STOP_FLAGS_DEFAULT, ACQ_STOP_FLAGS_KILL}) {
     Session s(Failure::none, GENTL_INFINITE, true);
     s.allow_retirement();

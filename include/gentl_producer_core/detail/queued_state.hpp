@@ -97,6 +97,16 @@ enum class BufferAllocationMode {
   kProducer,
 };
 
+// Captured by the backend callback without retaining or dereferencing a stream.
+// A snapshot before readiness checks plus atomic wait prevents lost wakes.
+struct CompletionWakeup {
+  std::atomic<std::uint64_t> generation{0};
+  void notify() noexcept {
+    generation.fetch_add(1, std::memory_order_release);
+    generation.notify_one();
+  }
+};
+
 struct DsHandleData final : BaseHandle {
   explicit DsHandleData(DevHandleData *in_parent);
   DevHandleData *parent = nullptr;
@@ -109,11 +119,14 @@ struct DsHandleData final : BaseHandle {
   std::uint64_t acquisition_limit = 0;
   bool acquisition_session_active = false;
   BufferAllocationMode buffer_allocation_mode = BufferAllocationMode::kUnset;
+  BufferCompletionOrder completion_order = BufferCompletionOrder::kFifo;
   std::vector<std::unique_ptr<struct BufferHandleData>> buffers;
   std::deque<struct BufferHandleData *> input_queue;
   std::deque<struct BufferHandleData *> sdk_queue;
   std::unique_ptr<PortModel> port_model;
   std::mutex mutex;
+  std::condition_variable work_available;
+  std::shared_ptr<CompletionWakeup> completion_wakeup;
   std::thread worker;
   // Host lifecycle operations serialize joins; retirement serializes backend stops.
   std::mutex lifecycle_mutex;
@@ -206,9 +219,31 @@ public:
                               std::string *error_text);
   bool start_stream(const DeviceDescriptor &device, std::string *error_text);
   StopResult stop_stream(const DeviceDescriptor &device, std::string *error_text);
+  bool cancel_wait_on_stop(const DeviceDescriptor &device) const {
+    return backend_->cancel_wait_on_stop(device);
+  }
+  std::size_t native_buffer_count(const DeviceDescriptor &device) const {
+    return backend_->native_buffer_count(device);
+  }
+  void *allocate_native_buffer(const DeviceDescriptor &device, std::size_t size,
+                               std::string *error) {
+    return backend_->allocate_native_buffer(device, size, error);
+  }
+  bool release_native_buffers(const DeviceDescriptor &device, std::string *error) {
+    return backend_->release_native_buffers(device, error);
+  }
+  BufferCompletionOrder completion_order(const DeviceDescriptor &device) const {
+    return backend_->completion_order(device);
+  }
+  bool set_completion_callback(const DeviceDescriptor &device,
+                               std::function<void()> callback) {
+    return backend_->set_completion_callback(device, std::move(callback));
+  }
   bool queue_buffer(const DeviceDescriptor &device, void *buffer,
                     std::size_t allocation_size, std::size_t transfer_size,
                     std::string *error_text);
+  bool revoke_buffer(const DeviceDescriptor &device, void *buffer,
+                     std::string *error_text);
   bool wait_frame(const DeviceDescriptor &device, std::uint64_t timeout_ms,
                   AcquireFrameResult *result, std::string *error_text);
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(GenTLProducerCore VERSION 0.2.1 LANGUAGES CXX)
+project(GenTLProducerCore VERSION 0.2.5 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -111,6 +111,12 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
   add_test(NAME gentl_queued_retirement_tests COMMAND gentl_queued_retirement_tests)
   set_tests_properties(gentl_queued_retirement_tests PROPERTIES TIMEOUT 30)
+  add_executable(gentl_queued_completion_tests tests/queued_completion.cpp)
+  target_link_libraries(gentl_queued_completion_tests PRIVATE queued_runtime)
+  target_compile_options(gentl_queued_completion_tests PRIVATE
+    -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+  add_test(NAME gentl_queued_completion_tests COMMAND gentl_queued_completion_tests)
+  set_tests_properties(gentl_queued_completion_tests PROPERTIES TIMEOUT 30)
   foreach(model copy queued)
     add_executable(gentl_${model}_configuration_tests tests/runtime_configuration.cpp)
     target_link_libraries(gentl_${model}_configuration_tests PRIVATE ${model}_runtime)

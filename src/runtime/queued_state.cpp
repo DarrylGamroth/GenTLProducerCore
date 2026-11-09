@@ -265,6 +265,11 @@ StopResult Runtime::stop_stream(const DeviceDescriptor &device,
   return backend_->stop_stream(device, error_text);
 }
 
+bool Runtime::revoke_buffer(const DeviceDescriptor &device, void *buffer,
+                            std::string *error_text) {
+  return backend_->revoke_buffer(device, buffer, error_text);
+}
+
 #include "state_common.inc"
 
 } // namespace gentl_producer_core::runtime

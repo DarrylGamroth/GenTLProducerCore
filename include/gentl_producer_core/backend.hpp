@@ -2,6 +2,7 @@
 #include "gentl_producer_core/port_model.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -117,25 +118,74 @@ public:
                              AcquireFrameResult *result,
                              std::string *error_text) = 0;
 };
-// Accepted buffers are borrowed until FIFO completion or successful stop.
+enum class BufferCompletionOrder { kFifo, kAny };
+
+// Accepted buffers are borrowed until completion or successful stop.
 // queue_buffer receives allocation and transfer lengths separately. wait_frame
-// must return the oldest accepted address; out-of-order completion is not
-// supported. stop_stream may run concurrently with wait_frame. Only an explicit
+// must return the oldest accepted address by default. A backend opting into
+// kAny may return any currently accepted address, exactly once per submission.
+// Completion order is fixed for an acquisition session. In kAny mode all input
+// buffers are submitted even for a finite acquisition: returning one address
+// can unblock another. The delivery count still limits published frames.
+// kAny also requires wait_frame(timeout_ms=0) to poll without blocking. The
+// worker interleaves these polls with consumer returns and interruptible idle
+// waits; kFifo retains the existing blocking wait behavior.
+// stop_stream may run concurrently with wait_frame. Only an explicit
 // buffers_released result permits reclamation; false must preserve ownership
 // and allow a retry. Operational errors do not imply retirement. A kStopped
 // wait result alone is not proof of retirement; the runtime must confirm stop.
 class QueuedBackend : public ProducerBackend {
 public:
+  virtual BufferCompletionOrder
+  completion_order(const DeviceDescriptor &) const {
+    return BufferCompletionOrder::kFifo;
+  }
+  // Optional kAny wakeup source. True opts into untimed idle waits; every new
+  // completion, fault or stopped state must notify, including inline at start.
+  // False must discard the callback and retains the polling fallback. The
+  // callback must not block, throw or re-enter the backend. Empty unregisters;
+  // clear/replacement must synchronize with callback invocation. The runtime
+  // installs before start and clears after joined, confirmed retirement.
+  // Opting in also allows nonblocking status polls with no submitted buffers,
+  // so a fault/stopped notification can retire a consumer-held native pool.
+  virtual bool set_completion_callback(const DeviceDescriptor &,
+                                       std::function<void()>) {
+    return false;
+  }
   virtual StopResult stop_stream(const DeviceDescriptor &device,
                                  std::string *error_text) = 0;
   virtual bool open_device(DeviceDescriptor *device,
                            std::string *error_text) = 0;
   virtual bool close_device(const DeviceDescriptor &device,
                             std::string *error_text) = 0;
+  // Pull adapters with one destination can stop concurrently to cancel a
+  // blocking read. They do not produce an incomplete buffer on KILL.
+  virtual bool cancel_wait_on_stop(const DeviceDescriptor &) const {
+    return false;
+  }
+  // A nonzero size selects a fixed, producer-owned native pool. Its
+  // addresses must stay valid until revoke or stream close, including stops.
+  virtual std::size_t native_buffer_count(const DeviceDescriptor &) const {
+    return 0;
+  }
+  virtual void *allocate_native_buffer(const DeviceDescriptor &, std::size_t,
+                                       std::string *) {
+    return nullptr;
+  }
+  virtual bool release_native_buffers(const DeviceDescriptor &, std::string *) {
+    return true;
+  }
   virtual bool queue_buffer(const DeviceDescriptor &device, void *buffer,
                             std::size_t allocation_size,
                             std::size_t transfer_size,
                             std::string *error_text) = 0;
+  // Completion can leave storage registered with a native buffer pool. Return
+  // false until this address can be revoked safely; failure preserves storage.
+  // Successful stop with buffers_released must retire any mappings of
+  // consumer storage. Producer-owned native pools live until stream close.
+  virtual bool revoke_buffer(const DeviceDescriptor &, void *, std::string *) {
+    return true;
+  }
   virtual bool wait_frame(const DeviceDescriptor &device,
                           std::uint64_t timeout_ms, AcquireFrameResult *result,
                           std::string *error_text) = 0;

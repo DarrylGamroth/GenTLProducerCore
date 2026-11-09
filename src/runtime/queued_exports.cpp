@@ -11,6 +11,7 @@
 #include <memory>
 #include <ranges>
 #include <string>
+#include <system_error>
 #include <thread>
 
 namespace gentl_producer_core::runtime {
@@ -165,8 +166,9 @@ take_input_for_sdk_locked(gentl_producer_core::runtime::DsHandleData *stream) {
   stream->sdk_queue.push_back(buffer);
   for (std::size_t index = 0; index < stream->sdk_queue.size(); ++index) {
     auto *queued = stream->sdk_queue[index];
-    queued->is_acquiring = index == 0U;
-    queued->is_queued = index != 0U;
+    queued->is_acquiring =
+        stream->completion_order == BufferCompletionOrder::kAny || index == 0U;
+    queued->is_queued = !queued->is_acquiring;
   }
   return buffer;
 }
@@ -176,8 +178,10 @@ void refresh_sdk_queue_states_locked(
   for (std::size_t index = 0; index < stream->sdk_queue.size(); ++index) {
     auto *buffer = stream->sdk_queue[index];
     buffer->is_sdk_queued = true;
-    buffer->is_acquiring = index == 0U;
-    buffer->is_queued = index != 0U;
+    // In any-order mode the backend can be filling any accepted address.
+    buffer->is_acquiring =
+        stream->completion_order == BufferCompletionOrder::kAny || index == 0U;
+    buffer->is_queued = !buffer->is_acquiring;
   }
 }
 
@@ -347,60 +351,99 @@ gentl_producer_core::StopResult retire_backend_locked(
   return result;
 }
 
+void notify_stream_work_locked(DsHandleData *stream) {
+  stream->work_available.notify_one();
+  if (stream->completion_wakeup)
+    stream->completion_wakeup->notify();
+}
+
+// Caller has joined the worker and holds lifecycle/configuration locks.
+void clear_completion_callback(DsHandleData *stream) {
+  std::scoped_lock lock(stream->mutex);
+  if (stream->completion_wakeup) {
+    Runtime::instance().set_completion_callback(stream->parent->device, {});
+    stream->completion_wakeup.reset();
+  }
+}
+
+// The caller holds the stream mutex, which serializes submission with stop.
+bool submit_input_locked(DsHandleData *stream) {
+  auto *buffer = take_input_for_sdk_locked(stream);
+  if (buffer == nullptr)
+    return true;
+  std::string error;
+  if (Runtime::instance().queue_buffer(stream->parent->device, buffer->base,
+                                       buffer->size, stream->current_payload_size,
+                                       &error))
+    return true;
+  stream->worker_error = std::move(error);
+  stream->sdk_queue.pop_back();
+  buffer->is_sdk_queued = false;
+  buffer->is_acquiring = false;
+  buffer->is_queued = true;
+  stream->input_queue.push_front(buffer);
+  refresh_sdk_queue_states_locked(stream);
+  return false;
+}
+
 void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
+  const auto wakeup = stream->completion_wakeup;
+  const bool single_destination = Runtime::instance().cancel_wait_on_stop(
+      stream->parent->device);
   for (;;) {
+    // Snapshot before both input admission and the completion poll. An event
+    // between either readiness check and parking changes this value.
+    const auto observed = wakeup
+        ? wakeup->generation.load(std::memory_order_acquire) : 0;
     bool stopping = false;
     for (;;) {
-      gentl_producer_core::runtime::BufferHandleData *buffer = nullptr;
       {
         std::scoped_lock lock(stream->mutex);
-        if (stream->stop_requested) { stopping = true; break; }
+        if (stream->stop_requested || !stream->worker_error.empty()) {
+          stopping = true;
+          break;
+        }
         const auto remaining = stream->acquisition_limit == GENTL_INFINITE
             ? std::numeric_limits<std::uint64_t>::max()
-            : stream->delivered_count >= stream->acquisition_limit
-                ? 0U : stream->acquisition_limit - stream->delivered_count;
-        if (stream->sdk_queue.size() >= remaining) break;
-        buffer = take_input_for_sdk_locked(stream);
-        if (buffer == nullptr) break;
-        // Serialize queue submission with host retirement: a buffer must never
-        // be submitted after the backend has confirmed retirement.
-        std::string error;
-        if (!gentl_producer_core::runtime::Runtime::instance().queue_buffer(
-                stream->parent->device, buffer->base, buffer->size,
-                stream->current_payload_size, &error)) {
-          stream->worker_error = std::move(error);
-          stream->sdk_queue.pop_back();
-          buffer->is_sdk_queued = false;
-          buffer->is_acquiring = false;
-          buffer->is_queued = true;
-          stream->input_queue.push_front(buffer);
-          refresh_sdk_queue_states_locked(stream);
-          stopping = true;
-        }
+            : stream->acquisition_limit - stream->delivered_count;
+        // A native ring may need a return later in the GenTL input queue
+        // before the next physical slot can be rearmed.
+        if (stream->input_queue.empty() ||
+            (single_destination && !stream->sdk_queue.empty()) ||
+            (stream->completion_order == BufferCompletionOrder::kFifo &&
+             stream->sdk_queue.size() >= remaining))
+          break;
+        stopping = !submit_input_locked(stream);
       }
       if (stopping) break;
     }
     if (stopping) break;
     {
-      std::scoped_lock lock(stream->mutex);
-      if (stream->sdk_queue.empty()) {
-        // No backend wait is possible until a consumer queues a buffer.
-        // The finite poll also observes host stop without requiring an event.
+      std::unique_lock lock(stream->mutex);
+      if (stream->sdk_queue.empty() && !wakeup) {
+        if (stream->completion_order == BufferCompletionOrder::kAny) {
+          stream->work_available.wait(lock, [&] {
+            return stream->stop_requested || !stream->input_queue.empty();
+          });
+        }
         stopping = true;
       }
     }
     if (stopping) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      if (stream->completion_order == BufferCompletionOrder::kFifo)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
       continue;
     }
     gentl_producer_core::AcquireFrameResult frame;
     std::string error;
     const bool waited = gentl_producer_core::runtime::Runtime::instance().wait_frame(
-        stream->parent->device, 1000U, &frame, &error);
+        stream->parent->device,
+        stream->completion_order == BufferCompletionOrder::kAny ? 0U : 1000U,
+        &frame, &error);
     std::vector<gentl_producer_core::runtime::EventHandleData *> events;
     bool done = false;
     {
-      std::scoped_lock lock(stream->mutex);
+      std::unique_lock lock(stream->mutex);
       if (stream->kill_requested) break;
       if (!waited) {
         stream->worker_error = std::move(error);
@@ -408,13 +451,24 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
       } else if (frame.status == gentl_producer_core::AcquireFrameStatus::kStopped) {
         done = true;
       } else if (frame.status == gentl_producer_core::AcquireFrameStatus::kSuccess) {
-        if (stream->sdk_queue.empty() ||
-            stream->sdk_queue.front()->base != frame.buffer) {
-          stream->worker_error = "backend returned a buffer outside the GenTL FIFO";
+        auto completed = stream->sdk_queue.begin();
+        if (stream->completion_order == BufferCompletionOrder::kAny) {
+          completed = std::find_if(
+              stream->sdk_queue.begin(), stream->sdk_queue.end(),
+              [&](auto *buffer) { return buffer->base == frame.buffer; });
+        }
+        if (completed == stream->sdk_queue.end() ||
+            (*completed)->base != frame.buffer) {
+          stream->worker_error = stream->completion_order == BufferCompletionOrder::kFifo
+              ? "backend returned a buffer outside the GenTL FIFO"
+              : "backend returned a buffer that is not currently submitted";
           done = true;
         } else {
-          auto *buffer = stream->sdk_queue.front();
-          stream->sdk_queue.pop_front();
+          auto *buffer = *completed;
+          if (completed == stream->sdk_queue.begin())
+            stream->sdk_queue.pop_front();
+          else
+            stream->sdk_queue.erase(completed);
           buffer->is_sdk_queued = false;
           buffer->is_acquiring = false;
           buffer->is_queued = false;
@@ -425,7 +479,8 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
           buffer->is_incomplete = frame.incomplete;
           buffer->size_filled = frame.bytes_filled;
           buffer->timestamp = frame.timestamp_ns;
-          buffer->frame_id = ++stream->frame_sequence;
+          stream->frame_sequence += frame.frame_id_increment;
+          buffer->frame_id = stream->frame_sequence;
           snapshot_buffer_description_locked(stream, buffer);
           ++stream->delivered_count;
           stream->underrun_count += frame.skipped_frames;
@@ -433,6 +488,16 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
           for (auto *event : events) publish_new_buffer_event(event, buffer);
           done = stream->acquisition_limit != GENTL_INFINITE &&
                  stream->delivered_count >= stream->acquisition_limit;
+        }
+      } else if (stream->completion_order == BufferCompletionOrder::kAny) {
+        if (wakeup) {
+          const bool idle = !stream->stop_requested && stream->input_queue.empty();
+          lock.unlock();
+          if (idle) wakeup->generation.wait(observed, std::memory_order_acquire);
+        } else {
+          stream->work_available.wait_for(lock, std::chrono::microseconds(100), [&] {
+            return stream->stop_requested || !stream->input_queue.empty();
+          });
         }
       }
     }
@@ -480,6 +545,7 @@ GenTL::GC_ERROR close_stream_handle_locked(DsHandleData *stream) {
       std::scoped_lock lock(stream->mutex);
       stream->stop_requested = true;
       stream->kill_requested = true;
+      notify_stream_work_locked(stream);
     }
     stopped = retire_backend_locked(stream, true);
   }
@@ -492,6 +558,10 @@ GenTL::GC_ERROR close_stream_handle_locked(DsHandleData *stream) {
     return io_error(stream->stop_error.empty()
         ? "backend did not release stream buffers" : stream->stop_error);
   }
+  clear_completion_callback(stream);
+  std::string release_error;
+  if (!Runtime::instance().release_native_buffers(device->device, &release_error))
+    return io_error(release_error);
 
   std::vector<EventHandleData *> events;
   {
@@ -1203,6 +1273,11 @@ DSAnnounceBuffer(DS_HANDLE hDataStream, void *pBuffer, size_t iSize,
     return GC_ERR_INVALID_PARAMETER;
   }
   std::scoped_lock lock(stream->mutex);
+  const auto native_count = gentl_producer_core::runtime::Runtime::instance()
+                                .native_buffer_count(stream->parent->device);
+  if (native_count != 0)
+    return gentl_producer_core::runtime::not_implemented(
+        "native DMA requires DSAllocAndAnnounceBuffer");
   if (reinterpret_cast<std::uintptr_t>(pBuffer) %
           stream->current_buffer_alignment !=
       0U) {
@@ -1250,6 +1325,12 @@ DSAllocAndAnnounceBuffer(DS_HANDLE hDataStream, size_t iSize, void *pPrivate,
   }
 
   std::scoped_lock lock(stream->mutex);
+  const auto native_count = gentl_producer_core::runtime::Runtime::instance()
+                                .native_buffer_count(stream->parent->device);
+  if (native_count != 0 && (stream->acquisition_session_active ||
+                            stream->buffers.size() >= native_count))
+    return gentl_producer_core::runtime::resource_in_use(
+        "native DMA pool is active or fully announced");
   if (iSize > std::numeric_limits<std::size_t>::max() -
                   (stream->current_buffer_alignment - 1U)) {
     return gentl_producer_core::runtime::invalid_buffer(
@@ -1264,9 +1345,20 @@ DSAllocAndAnnounceBuffer(DS_HANDLE hDataStream, size_t iSize, void *pPrivate,
     return gentl_producer_core::runtime::resource_in_use(
         "consumer and producer buffer allocation cannot be mixed");
   }
+  // Reserve handle storage before claiming a native address.
+  if (native_count != 0)
+    stream->buffers.reserve(native_count);
   auto buffer =
       std::make_unique<gentl_producer_core::runtime::BufferHandleData>(
-          stream, nullptr, iSize, pPrivate, true);
+          stream, nullptr, iSize, pPrivate, native_count == 0);
+  if (native_count != 0) {
+    std::string error;
+    buffer->base = gentl_producer_core::runtime::Runtime::instance()
+                       .allocate_native_buffer(stream->parent->device, iSize, &error);
+    if (buffer->base == nullptr)
+      return gentl_producer_core::runtime::invalid_buffer(error);
+    buffer->producer_owned = true;
+  }
   *phBuffer = buffer.get();
   stream->buffer_allocation_mode =
       gentl_producer_core::runtime::BufferAllocationMode::kProducer;
@@ -1310,6 +1402,12 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSFlushQueue(DS_HANDLE hDataStream,
       return gentl_producer_core::runtime::busy(
           "flush cannot reclaim backend-owned buffers during acquisition");
     }
+    if ((iOperation == ACQ_QUEUE_ALL_TO_INPUT ||
+         iOperation == ACQ_QUEUE_UNQUEUED_TO_INPUT) &&
+        gentl_producer_core::runtime::Runtime::instance()
+            .native_buffer_count(stream->parent->device) != 0)
+      return gentl_producer_core::runtime::not_implemented(
+          "native DMA slots must be returned individually with DSQueueBuffer");
     events = gentl_producer_core::runtime::retain_events_locked(
         stream->new_buffer_events);
     if (iOperation == ACQ_QUEUE_INPUT_TO_OUTPUT) {
@@ -1380,6 +1478,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSFlushQueue(DS_HANDLE hDataStream,
       for (auto *event : events)
         gentl_producer_core::runtime::publish_stream_buffer(event, buffer);
     }
+    gentl_producer_core::runtime::notify_stream_work_locked(stream);
   }
   gentl_producer_core::runtime::release_events(events);
   return GC_ERR_SUCCESS;
@@ -1416,7 +1515,9 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
                                      &error_text)) {
       return gentl_producer_core::runtime::io_error(error_text);
     }
-    if (stream->buffers.empty()) {
+    const auto native_count = gentl_producer_core::runtime::Runtime::instance()
+                                  .native_buffer_count(stream->parent->device);
+    if (stream->buffers.size() < std::max<std::size_t>(1, native_count)) {
       return gentl_producer_core::runtime::invalid_buffer(
           "fewer than STREAM_INFO_BUF_ANNOUNCE_MIN buffers are announced");
     }
@@ -1433,8 +1534,20 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
       return gentl_producer_core::runtime::invalid_buffer(
           "buffer base does not meet stream alignment");
     }
+    const auto order = gentl_producer_core::runtime::Runtime::instance()
+                           .completion_order(stream->parent->device);
+    std::shared_ptr<gentl_producer_core::runtime::CompletionWakeup> wakeup;
+    if (order == gentl_producer_core::BufferCompletionOrder::kAny) {
+      wakeup = std::make_shared<gentl_producer_core::runtime::CompletionWakeup>();
+      if (!gentl_producer_core::runtime::Runtime::instance().set_completion_callback(
+              stream->parent->device, [wakeup]() noexcept { wakeup->notify(); }))
+        wakeup.reset();
+    }
     if (!gentl_producer_core::runtime::Runtime::instance().start_stream(
             stream->parent->device, &error_text)) {
+      if (wakeup)
+        gentl_producer_core::runtime::Runtime::instance().set_completion_callback(
+            stream->parent->device, {});
       return gentl_producer_core::runtime::io_error(error_text);
     }
     gentl_producer_core::runtime::apply_stream_description_locked(stream,
@@ -1449,14 +1562,52 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
     stream->is_acquiring = true;
     stream->acquisition_session_active = true;
     stream->acquisition_limit = iNumToAcquire;
+    stream->completion_order = order;
+    stream->completion_wakeup = std::move(wakeup);
     stream->delivered_count = 0;
     stream->started_count = 0;
     {
       std::scoped_lock device_lock(stream->parent->mutex);
       stream->parent->acquisition_active = true;
     }
-    stream->worker =
-        std::thread(gentl_producer_core::runtime::stream_worker, stream);
+    const auto rollback_start = [&](const std::string &error) {
+      auto &runtime = gentl_producer_core::runtime::Runtime::instance();
+      stream->stop_result = runtime.stop_stream(stream->parent->device,
+                                                &stream->stop_error);
+      stream->stop_attempted = true;
+      if (stream->stop_result.buffers_released) {
+        gentl_producer_core::runtime::return_sdk_queue_to_input_locked(stream);
+        if (stream->completion_wakeup)
+          runtime.set_completion_callback(stream->parent->device, {});
+        stream->completion_wakeup.reset();
+      }
+      const bool retired = stream->stop_result.success &&
+                           stream->stop_result.buffers_released;
+      stream->worker_running = false;
+      stream->is_acquiring = false;
+      stream->acquisition_session_active = !retired;
+      stream->stop_requested = !retired;
+      {
+        std::scoped_lock device_lock(stream->parent->mutex);
+        stream->parent->acquisition_active = !retired;
+      }
+      return gentl_producer_core::runtime::io_error(
+          stream->stop_error.empty() ? error : stream->stop_error);
+    };
+    if (native_count != 0) {
+      // Arm the initial contiguous prefix before the application can send
+      // AcquisitionStart or a software trigger.
+      while (!stream->input_queue.empty()) {
+        if (!gentl_producer_core::runtime::submit_input_locked(stream))
+          return rollback_start(stream->worker_error);
+      }
+    }
+    try {
+      stream->worker =
+          std::thread(gentl_producer_core::runtime::stream_worker, stream);
+    } catch (const std::system_error &error) {
+      return rollback_start(error.what());
+    }
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),
@@ -1481,6 +1632,8 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
 
   std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
   std::scoped_lock lifecycle_lock(stream->lifecycle_mutex);
+  const bool cancel_wait = gentl_producer_core::runtime::Runtime::instance()
+                               .cancel_wait_on_stop(stream->parent->device);
   gentl_producer_core::StopResult result;
   bool retry_completed_stop = false;
   {
@@ -1493,12 +1646,13 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
       retry_completed_stop = stream->stop_attempted && !stream->worker_running;
       stream->stop_requested = true;
       stream->kill_requested = iStopFlags == ACQ_STOP_FLAGS_KILL;
+      gentl_producer_core::runtime::notify_stream_work_locked(stream);
     }
-    if (iStopFlags == ACQ_STOP_FLAGS_KILL)
+    if (iStopFlags == ACQ_STOP_FLAGS_KILL || cancel_wait)
       result = gentl_producer_core::runtime::retire_backend_locked(stream, true);
   }
   if (stream->worker.joinable()) stream->worker.join();
-  if (iStopFlags == ACQ_STOP_FLAGS_DEFAULT) {
+  if (iStopFlags == ACQ_STOP_FLAGS_DEFAULT && !cancel_wait) {
     // DEFAULT finishes the current buffer before retiring the SDK queue. A
     // failure first observed during this stop is returned, never auto-retried.
     std::scoped_lock retirement_lock(stream->retirement_mutex);
@@ -1509,13 +1663,15 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
   if (!result.buffers_released)
     return gentl_producer_core::runtime::io_error(error_text.empty()
         ? "backend did not release stream buffers" : error_text);
+  gentl_producer_core::runtime::clear_completion_callback(stream);
   bool stopped = result.success;
 
   gentl_producer_core::runtime::BufferHandleData *incomplete_buffer = nullptr;
   std::vector<gentl_producer_core::runtime::EventHandleData *> events;
   {
     std::scoped_lock lock(stream->mutex);
-    if (stream->kill_requested && !stream->sdk_queue.empty()) {
+    if (!cancel_wait && stream->kill_requested && !stream->sdk_queue.empty() &&
+        stream->completion_order == gentl_producer_core::BufferCompletionOrder::kFifo) {
       incomplete_buffer = stream->sdk_queue.front();
       stream->sdk_queue.pop_front();
       incomplete_buffer->is_sdk_queued = false;
@@ -1549,6 +1705,13 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
     if (iStopFlags == ACQ_STOP_FLAGS_DEFAULT && !stream->worker_error.empty()) {
       stopped = false;
       error_text = stream->worker_error;
+      // Report the fault once while leaving native consumers a successful
+      // stop retry before they discard or revoke the DMA buffers.
+      if (gentl_producer_core::runtime::Runtime::instance()
+              .native_buffer_count(stream->parent->device) != 0) {
+        stream->worker_error.clear();
+        stream->acquisition_session_active = true;
+      }
     }
   }
   gentl_producer_core::runtime::release_events(events);
@@ -1613,7 +1776,9 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
         piSize);
   case STREAM_INFO_DEFINES_PAYLOADSIZE:
     return gentl_producer_core::runtime::info_scalar<bool8_t>(
-        0, INFO_DATATYPE_BOOL8, piType, pBuffer, piSize);
+        gentl_producer_core::runtime::Runtime::instance()
+            .native_buffer_count(stream->parent->device) != 0,
+        INFO_DATATYPE_BOOL8, piType, pBuffer, piSize);
   case STREAM_INFO_TLTYPE:
     return gentl_producer_core::runtime::info_string(
         gentl_producer_core::runtime::Runtime::instance()
@@ -1625,7 +1790,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
         0, INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ANNOUNCE_MIN:
     return gentl_producer_core::runtime::info_scalar<size_t>(
-        1, INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
+        std::max<std::size_t>(1, gentl_producer_core::runtime::Runtime::instance()
+                                     .native_buffer_count(stream->parent->device)), INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ALIGNMENT:
     return gentl_producer_core::runtime::info_scalar<size_t>(
         stream->current_buffer_alignment, INFO_DATATYPE_SIZET, piType, pBuffer,
@@ -1658,6 +1824,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSRevokeBuffer(DS_HANDLE hDataStream,
   if (stream == nullptr || buffer == nullptr || buffer->parent != stream) {
     return gentl_producer_core::runtime::invalid_handle();
   }
+  std::scoped_lock configuration_lock(stream->parent->configuration_mutex);
+  std::scoped_lock lifecycle_lock(stream->lifecycle_mutex);
   std::scoped_lock lock(stream->mutex);
   auto it = std::find_if(
       stream->buffers.begin(), stream->buffers.end(),
@@ -1669,6 +1837,12 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSRevokeBuffer(DS_HANDLE hDataStream,
       buffer->awaiting_delivery) {
     return gentl_producer_core::runtime::busy(
         "cannot revoke a buffer owned by a stream queue");
+  }
+  std::string error;
+  if (!gentl_producer_core::runtime::Runtime::instance().revoke_buffer(
+          stream->parent->device, buffer->base, &error)) {
+    return gentl_producer_core::runtime::busy(error.empty()
+        ? "backend still retains the buffer" : error);
   }
   stream->input_queue.erase(std::remove(stream->input_queue.begin(),
                                         stream->input_queue.end(), buffer),
@@ -1709,6 +1883,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSQueueBuffer(DS_HANDLE hDataStream,
   buffer->awaiting_delivery = false;
   buffer->size_filled = 0;
   stream->input_queue.push_back(buffer);
+  gentl_producer_core::runtime::notify_stream_work_locked(stream);
   return GC_ERR_SUCCESS;
 }
 
