@@ -872,11 +872,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE EventGetData(EVENT_HANDLE hEvent,
 
     if (event->event_type == EVENT_NEW_BUFFER) {
       const size_t required_size = sizeof(EVENT_NEW_BUFFER_DATA);
-      if (pBuffer == nullptr) {
-        *piSize = required_size;
-        return GC_ERR_SUCCESS;
-      }
-      if (*piSize < required_size) {
+      if (pBuffer != nullptr && *piSize < required_size) {
         *piSize = required_size;
         return GC_ERR_BUFFER_TOO_SMALL;
       }
@@ -902,25 +898,24 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE EventGetData(EVENT_HANDLE hEvent,
           delivered != nullptr) {
         delivered->awaiting_delivery = false;
       }
-      std::memcpy(pBuffer, &payload, required_size);
-      *piSize = required_size;
+      // A null destination discards the event and releases the output buffer.
+      if (pBuffer != nullptr)
+        std::memcpy(pBuffer, &payload, required_size);
+      *piSize = pBuffer != nullptr ? required_size : 0;
       return GC_ERR_SUCCESS;
     }
 
     if (event->event_type == EVENT_FEATURE_INVALIDATE) {
-      const std::string payload = event->feature_invalidate_queue.front();
-      event->feature_invalidate_queue.pop_front();
+      const auto &payload = event->feature_invalidate_queue.front();
       const size_t required_size = payload.size() + 1U;
-      if (pBuffer == nullptr) {
-        *piSize = required_size;
-        return GC_ERR_SUCCESS;
-      }
-      if (*piSize < required_size) {
+      if (pBuffer != nullptr && *piSize < required_size) {
         *piSize = required_size;
         return GC_ERR_BUFFER_TOO_SMALL;
       }
-      std::memcpy(pBuffer, payload.c_str(), required_size);
-      *piSize = required_size;
+      if (pBuffer != nullptr)
+        std::memcpy(pBuffer, payload.c_str(), required_size);
+      event->feature_invalidate_queue.pop_front();
+      *piSize = pBuffer != nullptr ? required_size : 0;
       return GC_ERR_SUCCESS;
     }
 

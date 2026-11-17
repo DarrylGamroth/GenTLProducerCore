@@ -127,6 +127,12 @@ if(BUILD_TESTING)
   add_test(NAME gentl_queued_completion_tests COMMAND gentl_queued_completion_tests)
   set_tests_properties(gentl_queued_completion_tests PROPERTIES TIMEOUT 30)
   foreach(model copy queued)
+    add_executable(gentl_${model}_abi_tests tests/runtime_abi.cpp)
+    target_link_libraries(gentl_${model}_abi_tests PRIVATE ${model}_runtime)
+    target_compile_options(gentl_${model}_abi_tests PRIVATE
+      -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+    add_test(NAME gentl_${model}_abi_tests COMMAND gentl_${model}_abi_tests)
+    set_tests_properties(gentl_${model}_abi_tests PROPERTIES TIMEOUT 15)
     add_executable(gentl_${model}_configuration_tests tests/runtime_configuration.cpp)
     target_link_libraries(gentl_${model}_configuration_tests PRIVATE ${model}_runtime_test)
     target_compile_options(gentl_${model}_configuration_tests PRIVATE

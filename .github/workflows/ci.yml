@@ -32,7 +32,7 @@ jobs:
       - name: Collect line and branch coverage
         run: |
           gcovr --root "$GITHUB_WORKSPACE" --filter '^src/' --filter '^include/' \
-            --cobertura "$RUNNER_TEMP/coverage.xml" --print-summary "$RUNNER_TEMP/core"
+            --fail-under-line 90.01 --cobertura "$RUNNER_TEMP/coverage.xml" --print-summary "$RUNNER_TEMP/core"
       - name: Upload coverage to Codecov
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
