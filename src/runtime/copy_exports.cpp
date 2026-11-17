@@ -1286,6 +1286,7 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
               stream->parent->device, &error_text);
       stream->worker_running = false;
       stream->is_acquiring = false;
+      stream->start_rollback_pending = !stopped;
       stream->acquisition_session_active = !stopped;
       stream->stop_requested = !stopped;
       {
@@ -1337,11 +1338,14 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
   }
 
   bool worker_failed = false;
+  bool rollback_pending = false;
   {
     std::scoped_lock lock(stream->mutex);
     stream->worker_running = false;
     stream->is_acquiring = false;
-    stream->acquisition_session_active = !stopped;
+    rollback_pending = stream->start_rollback_pending && !stopped;
+    stream->start_rollback_pending = rollback_pending;
+    stream->acquisition_session_active = rollback_pending;
     if (stopped && !stream->worker_error.empty()) {
       worker_failed = true;
       error_text = std::move(stream->worker_error);
@@ -1349,7 +1353,7 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
   }
   {
     std::scoped_lock lock(stream->parent->mutex);
-    stream->parent->acquisition_active = !stopped;
+    stream->parent->acquisition_active = rollback_pending;
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),

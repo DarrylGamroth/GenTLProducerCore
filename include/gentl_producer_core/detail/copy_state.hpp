@@ -122,6 +122,7 @@ struct DsHandleData final : BaseHandle {
   std::thread worker;
   bool stop_requested = false;
   bool worker_running = false;
+  bool start_rollback_pending = false;
   std::size_t current_width = 0;
   std::size_t current_height = 0;
   std::size_t current_offset_x = 0;
