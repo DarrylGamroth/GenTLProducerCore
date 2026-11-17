@@ -5,14 +5,13 @@
 Extract the deterministic `DSGetBufferInfo` response dispatch shared by SDK2
 and SDK3. Handle validation, stream locking, buffer ownership, frame metadata
 capture, acquisition, and remote device controls stay with each producer.
-the host application owns the SDK2 camera during this work: do not open it, rebuild the active
-CTI, or modify any original checkout. Use isolated worktrees and builds.
+The review used software tests in isolated worktrees.
 
 | Repository | Source commit | Worktree / branch |
 | --- | --- | --- |
 | GenTLProducerCore | c038116 | core / refactor/shared-buffer-info |
-| continuousSDK2GenTL | fd20b6e | sdk2 / refactor/shared-buffer-info |
-| continuousSDK3GenTL | 05d33a6 | sdk3 / refactor/shared-buffer-info |
+| copy producer | fd20b6e | sdk2 / refactor/shared-buffer-info |
+| queued producer | 05d33a6 | sdk3 / refactor/shared-buffer-info |
 
 The review used separate worktrees with clean starting trees.
 
@@ -102,59 +101,23 @@ No SDK2 camera operation or active CTI rebuild was performed.
 | Runtime dependencies | readelf NEEDED entries contain vendor/system libraries, no shared core library |
 
 Builds emitted no compiler warnings. Diffs pass `git diff --check`. These are
-software/mock/simulator results, not physical camera or the host application validation. At this initial checkpoint no state machine or concurrency primitive changed.
+software test results. The initial extraction kept existing state machines and concurrency primitives.
 The comprehensive corrective follow-up below adds register/queue coordination
 and records its sanitizer evidence separately. The original SDK2 production
 CTI remains at its pre-extraction path and timestamp.
 
-### Verification environment and commands
-
-For reproduction, point CMake at the SDK2 and SDK3 installations, the
-EMVA GenTL 1.6 headers, and the GenApi 1.1 schema. SDK2 tests use the mock
-configuration created by CMake. EMVA's
-[2025.10 package](https://www.emva.org/standards-technology/genicam/genicam-downloads-archive/)
-was downloaded to the isolated workspace and verified against its published
-SHA-256 `632fed8c4092855354741261908ff0df0bf7a8ef6fedfa261ebec29a7998e8e6`.
-The Linux64 x64 SDK/Runtime archives were extracted under
-`deps/GenICam_Package_2025.10/Reference Implementation`, and the GenApi schema
-archive under `GenApi`. Licensed dependencies are not committed or installed
-system-wide. SDK3 uses GenApi-C 3.5.0 and SDK3 3.12.30012.0. The simulator
-conformance test passed with exactly its two expected simulator devices.
-
-From the isolated workspace, the main configurations are:
+### Reproduce the Core checks
 
 ```sh
-cmake -S core -B core/build \
-  -DGenTLHeaders_ROOT=/path/to/gentl-1.6 \
-  -DGenTLProducerCore_FETCH_GENTL_HEADERS=OFF
-cmake --build core/build -j 6
-ctest --test-dir core/build --output-on-failure
-cmake --install core/build --prefix "$PWD/install"
-
-cmake -S sdk2 -B sdk2/build \
-  -DGENTL_PRODUCER_CORE_SOURCE_DIR="$PWD/core" \
-  -DGenTLHeaders_ROOT=/path/to/gentl-1.6 \
-  -DGenTLProducerCore_FETCH_GENTL_HEADERS=OFF \
-  -Dcontinuous_SDK2_ROOT=/path/to/continuous-sdk2 \
-  -Dcontinuous2_GENAPI_SCHEMA=/path/to/GenApiSchema_Version_1_1.xsd
-cmake --build sdk2/build -j 6
-ctest --test-dir sdk2/build --output-on-failure
-
-cmake -S sdk3 -B sdk3/build \
-  -DGENTL_PRODUCER_CORE_SOURCE_DIR="$PWD/core" \
-  -Dcontinuous_SDK3_ROOT=/path/to/continuous-sdk3 \
-  -DGENICAM_PACKAGE_ROOT="$PWD/deps/GenICam_Package_2025.10" \
-  -DGenTLProducerCore_FETCH_GENTL_HEADERS=OFF \
-  -DcontinuousSDK3_FETCH_GENICAM_HEADERS=OFF \
-  -DcontinuousSDK3_REQUIRE_GENAPI_C_TEST=ON
-cmake --build sdk3/build -j 6
-ctest --test-dir sdk3/build --output-on-failure
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix "$PWD/install"
 ```
 
-For installed-package configurations, use a fresh `build-installed` directory,
-omit `GENTL_PRODUCER_CORE_SOURCE_DIR`, and supply
-`-DCMAKE_PREFIX_PATH="$PWD/install"`. Other arguments are the same. Baseline
-SDK3 used the original, unmodified SDK3 source with an isolated build directory.
+External producer conformance checks used a mock for the copy runtime and a
+vendor simulator for the queued runtime. See each producer's build
+instructions for its dependency paths and test configuration.
 
 Full local logs are siblings of these worktrees: `core-*.log`,
 `sdk2-baseline-*.log`, `sdk2-build.log`, `sdk2-tests.log`,
@@ -173,7 +136,7 @@ compatibility-alias issue remains.
 
 Commit/publish the core API first, then each producer adoption. Keep the core
 requirement at 0.1.2 in both adapters so installed older packages fail at
-configuration rather than compiling against a missing header. triggered and the
+configuration rather than compiling against a missing header. frame grabber and the
 remaining handle/event/stream lifecycle migration are follow-up work.
 
 
@@ -186,5 +149,5 @@ this record's initial preservation decisions where the GenTL standard requires
 correction: producer ownership flags, DATA_SIZE reset/intended-size behavior,
 empty killed-image flags, and unknown-command errors. It also records the
 port-helper corrections, publication/consumer concurrency work and future
-callback-sdk boundary. Initial validation counts above describe the extraction
+callback SDK boundary. Initial validation counts above describe the extraction
 checkpoint, not the final corrective-review configuration.

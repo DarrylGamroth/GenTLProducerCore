@@ -19,19 +19,10 @@ metadata/producer mappings respectively. The primary adjudicates findings,
 checks significant fixes, and verifies integration. Prior extraction tests
 passing established behavior preservation, not full protocol conformance.
 
-the host application retains the SDK2 camera. No physical camera access, settings changes, active CTI rebuild, or deployment
-was performed as part of this review. Publication of the reviewed branches
-was subsequently authorized; it leaves the host application's active build untouched.
-SDK2 verification uses a mock SDK; SDK3 uses the vendor simulator. Physical
-SDK2/SDK3 camera qualification remains a separate gate.
-
-Review and corrective implementation are complete for the shared library and
-the identified metadata/queue races. Independent corrective reviews found no
-remaining blocker within that scope. The reviewed implementation is delivered on `refactor/shared-buffer-info`
-branches in the core and both producer repositories. It is not deployed to
-the host application or merged into the original checkouts.
-Hardware qualification, vendor sanitizer reports, and source-handle destruction
-are explicitly outside the completed validation claim.
+Verification used a mock for the copy producer and a simulator for the queued
+producer. Physical camera operation and source-handle destruction remain
+outside the scope of this review. Independent corrective reviews confirmed
+the shared library fixes and the buffer metadata and queue regressions.
 
 ## Findings and disposition
 
@@ -69,12 +60,12 @@ specification and fail-before producer regressions. Before-fix logs:
 independent ASan repro; ports regression runs also reproduce P2–P7. Exact
 source/test changes and final results follow below when verified.
 
-## Boundaries for a future callback-sdk producer
+## Boundaries for a future callback SDK producer
 
-FixtureVendor's `callback-sdk_C_V2.h` defines per-context discovery/control, SDK ring buffers and raw-image
+A callback-based camera SDK can define per-context discovery/control, SDK ring buffers and raw-image
 pointers, and image callbacks with a `beforeCopy` selection. This is header
 inspection only, not SDK execution, a vendor lifetime guarantee, or hardware
-validation. No callback-sdk producer is implemented by this work.
+validation. No callback SDK producer is implemented by this work.
 
 | Concern | Shared core suitability / producer obligation |
 | --- | --- |
@@ -92,7 +83,7 @@ The core is useful for that producer as protocol formatting/port infrastructure.
 Sharing the acquisition state machine is neither required nor justified by the
 current evidence. Native SDK versions, frame grabber, camera model, pointer
 validity, callback shutdown guarantees and image stride/tag layout need to be
-qualified for the chosen callback-sdk configuration.
+qualified for the chosen callback SDK configuration.
 
 Additional accepted limits: Linux x86-64 is the validated producer platform;
 native-endian integer helpers must not silently claim big-endian portability.
@@ -149,19 +140,10 @@ tests. XML validation passes in both ordinary build configurations. No
 suppressions or relaxed sanitizer exit settings were used to manufacture a
 passing result.
 
-SDK3 reports originate in unchanged `libatdevsimulator.so` (BuildId
-`b7f6b9aa24ca7e59af6902dbe1dd6d9754c4447d`):
-TcontinuousFilePath operator= offsets 0x3041e/0x3046f, operator+ 0x304ef, and
-TcontinuousDynamicLoader::Open offset 0x32228. The identical reports on the original
-SDK3/core baseline establish that they are not introduced by this extraction.
-They do not establish whether the vendor code has a true race or synchronization
-that the sanitizer cannot observe. No speculative SDK workaround was added.
-Vendor review/instrumented SDK evidence is needed for a clean SDK3 race claim.
-
-SDK3 links also emit `.dynsym local symbol ... >= sh_info` diagnostics from
-unchanged `libatcore.so.3.12.30012.0`; the unchanged baseline emits the same
-messages. Builds and ordinary runtime tests succeed. No compiler warning or
-new shared-core linker diagnostic was observed.
+The vendor simulator produced the same sanitizer reports on the baseline
+and with the shared runtime. The reports could reflect a race or
+synchronization the sanitizer cannot observe. Ordinary builds also repeated
+baseline vendor linkage diagnostics while tests passed.
 
 Primary verification logs under the isolated workspace:
 `review-core-{build,tests,install}.log`, `review-core-asan-{build,tests}.log`,
@@ -185,9 +167,7 @@ Relevant source locations (function names remain stable as lines change):
   core unit tests and SDK-free runtime-path MODULE fixture.
 
 The shared core is suitable for continued SDK2/SDK3 integration under these
-contracts and for a future normalized callback-sdk image path. Release qualification
-still needs physical SDK2 testing after the host application releases the camera and physical
-SDK3 testing for the actual model/configuration. simulator is not that hardware
-qualification. Keep the core SDK-free; merge core API before adapter adoption.
+contracts and for a future normalized callback SDK image path. Release qualification
+still needs physical camera testing with the intended configuration. Keep the core SDK-free; merge core API before adapter adoption.
 Do not extract a universal acquisition state machine until all three memory
 ownership strategies and shutdown/closure contracts have evidence.

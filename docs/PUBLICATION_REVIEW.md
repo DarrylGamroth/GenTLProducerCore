@@ -11,7 +11,7 @@ The existing v0.2.5 release has no attached binaries.
 | ID | Severity | Finding | Validation |
 | --- | --- | --- | --- |
 | CORE-01 | High | Copy acquisition could throw across the GenTL ABI if worker creation failed after starting its backend. | The test runtime injects thread creation failure and checks rollback, failed rollback, and a successful stop retry. |
-| CORE-02 | Medium | GenApi stream registers and GenTL disagree on native buffer minima and the number of queued FIFO buffers. The minimum mismatch was reproduced on the triggered mock. | Runtime tests compare the stream port registers with `DSGetInfo` for both cases. |
+| CORE-02 | Medium | GenApi stream registers and GenTL disagree on native buffer minima and the number of queued FIFO buffers. The minimum mismatch was reproduced on the frame grabber mock. | Runtime tests compare the stream port registers with `DSGetInfo` for both cases. |
 | CORE-03 | Medium | Copy buffer metadata lost the backend's image padding. | Runtime tests check padding across configuration changes and reuse of a delivered buffer. |
 | CORE-04 | Medium | Copy acquisition faults were discarded when backend stop succeeded. | The copy mock injects a worker error and checks the stop status and diagnostic. |
 | CORE-05 | Medium | Both runtimes discarded a feature invalidation when the destination was too small and retained a New Buffer event when the destination was null. GenTL 1.6 §4.2 and §6.3.7.2 require retry on error and discard on a null destination. | Both mock runtimes preserve the feature event for retry and allow the discarded New Buffer to be queued again. Iris uses the specified retry and discard behavior. |

@@ -18,12 +18,12 @@ The dependency boundary is:
 ```mermaid
 flowchart LR
     Headers["GenICam GenTL.h"] --> Core["GenTLProducerCore static PIC library"]
-    Core --> SDK2["continuousSDK2GenTL CTI"]
-    Core --> SDK3["continuousSDK3GenTL CTI"]
-    Core --> triggered["trigger_fixtureGenTL CTI"]
-    continuous2SDK["continuous SDK2"] --> SDK2
-    continuous3SDK["continuous SDK3"] --> SDK3
-    EdtSDK["triggered pdv SDK"] --> triggered
+    Core --> SDK2["copy producer CTI"]
+    Core --> SDK3["queued producer CTI"]
+    Core --> frame grabber["frame grabber producer CTI"]
+    CopySDK["Copy SDK"] --> SDK2
+    QueuedSDK["Queued SDK"] --> SDK3
+    GrabberSDK["Frame grabber SDK"] --> frame grabber
 ```
 
 Each producer owns its vendor adapter and links the core into its own CTI.
@@ -66,9 +66,9 @@ same CMake target and retain only their producer-specific module-port assembly.
 
 | Producer | Source-checkout build | Installed-package build | Existing producer test | Runtime core dependency |
 | --- | --- | --- | --- | --- |
-| continuousSDK2GenTL | Passed | Passed | Mock SDK2 conformance passed | None; core linked statically |
-| continuousSDK3GenTL | Passed | Passed | simulator and XML-schema tests passed | None; core linked statically |
-| trigger_fixtureGenTL | Passed | Passed | Mock triggered/CLProtocol smoke test passed | None; core linked statically |
+| copy producer | Passed | Passed | Mock SDK2 conformance passed | None; core linked statically |
+| queued producer | Passed | Passed | simulator and XML-schema tests passed | None; core linked statically |
+| frame grabber producer | Passed | Passed | Mock frame grabber/CLProtocol smoke test passed | None; core linked statically |
 
 These are software and simulator/mock results. They do not qualify physical
 cameras, frame grabbers, vendor kernel drivers, timing, or transport behavior.
@@ -79,14 +79,14 @@ Version 0.1.2 adds `BufferInfo` and `info_buffer` for the common image-buffer
 information responses in SDK2 and SDK3. Producers still validate handles, hold
 their stream mutex, and choose values according to their own buffer state.
 The formatter has no SDK calls, handles, queues, ownership, or state transitions.
-Producer-specific query support stays local. triggered adoption is deferred.
+Producer-specific query support stays local. frame grabber adoption is deferred.
 See [the extraction record](BUFFER_INFO_EXTRACTION.md) for the exact boundary,
 compatibility decisions, worktrees, and validation.
 
 ## Later lifecycle extraction
 
 Lifecycle code is intentionally deferred because the producers do not share a
-single buffer-ownership model. SDK2 and triggered use pull/copy acquisition, while
+single buffer-ownership model. SDK2 and frame grabber use pull/copy acquisition, while
 SDK3 queues consumer memory into its vendor SDK. A later extraction needs a
 stable, explicitly designed boundary rather than a generic backend interface
 that hides those differences.

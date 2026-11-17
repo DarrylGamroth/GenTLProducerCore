@@ -1,13 +1,13 @@
 # Queued completion order — 2026-11-03
 
 Core 0.2.3 adds opt-in completion by buffer address for the experimental
-camera adapter out-of-order backend producer. Existing queued backends remain FIFO; copy
+out-of-order capture producer. Existing queued backends remain FIFO; copy
 acquisition is unchanged. The GenTL C entry points and event payloads are unchanged.
 
 The checkout started at commit `c534bbc0b1ca7e9d22048a4924efd1b4cee4f22f`
 with the preceding task's seven modified files implementing native-pool
 revocation/version 0.2.2. This work extends those changes in place; none were
-discarded. continuous SDK2, SDK3, triggered and PipeWire sources remain unchanged.
+discarded. This work changes the shared runtime and the out-of-order producer.
 
 ## Contract and mechanism
 
@@ -17,12 +17,12 @@ any accepted address, once per submission. The mode is captured before worker
 creation and remains immutable during that session. Returned addresses must
 still belong to the current outstanding set; announcement alone is insufficient.
 The native backend must prevent stale completions across reuse of the same
-address. out-of-order backend also validates its unique per-delivery lease token.
+address. The out-of-order backend also validates its unique per-delivery lease token.
 
 The single worker continues to perform every native submission and completion
 poll. `kAny` searches the outstanding deque and erases only the matching entry.
 The scan and middle removal cost O(N), bounded by announced/submitted buffers;
-out-of-order backend additionally limits its fixed pool to 64. The default FIFO identity
+The out-of-order backend additionally limits its fixed pool to 64. The default FIFO identity
 check/removal retains its front-only path. Existing state-refresh scans remain.
 No new image allocation or copy is introduced; this is not a whole-worker
 zero-allocation claim (event containers and setup retain their existing costs).
@@ -80,7 +80,7 @@ identities, unchanged default FIFO rejection, finite count shorter than pool,
 failed retirement after non-head completion, retained membership and revoke/
 flush guards. Existing retirement tests retain FIFO stop/failure/KILL coverage.
 
-camera adapter's test uses the actual queued runtime, adapter and bridge with fake
+The out-of-order fixture uses the actual queued runtime, adapter and bridge with fake
 DCAM/native operations: A/B events, return B while holding A, no credits, return
 A, credits for both, physical A/B completion against B/A submission order,
 continuous/finite runs, stop/flush/restart and revoke. It calls no image-copy API.
@@ -88,21 +88,21 @@ continuous/finite runs, stop/flush/restart and revoke. It calls no image-copy AP
 Independent Sol review inspected ordering, finite submission, ownership, flags,
 KILL and the subsequent CV notification paths. No confirmed software blocker
 remained. Software evidence does not establish physical DMA, hardware credits
-or callback quiescence on the camera.
+or callback quiescence on hardware.
 
 ## Compatibility and reproduction
 
 Build environment: Linux x86-64, C++20, GCC/libstdc++ 14.2.0, glibc 2.41,
 system allocator and pthread-backed standard mutex/CV/thread. Warning flags
 include `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`; tests enable assertions.
-Normal camera adapter build has no build-type override; sanitizer build is Debug.
+The out-of-order producer's default build has no build-type override; sanitizer build is Debug.
 
 | Producer | Contract preserved | Verification against this core source |
 | --- | --- | --- |
-| camera adapter copy + experimental | Copy unaffected; out-of-order backend explicitly opts into `kAny`. | Both CTIs build; 14/14 CTest checks including all eight core checks. |
-| continuous SDK2 | CopyBackend; no source changes. | `build-deb-validation`: 11/11 tests including mock conformance, stop priority and camera controls. |
-| triggered pdv | CopyBackend; no source changes. | `build-genapi351`: 11/11 tests including image layout/dynamic geometry smoke. |
-| continuous SDK3 | Default FIFO plus its own SDK FIFO validation; no source changes. | `build/core-any-order`: 10/10 tests including native stop fault and XML. Optional GenApi-C/simulator tests unavailable. Vendor libatcore emits malformed `.dynsym` local-symbol linker warnings; links succeed. |
+| Copy and out-of-order backends | Copy unaffected; the out-of-order backend explicitly opts into `kAny`. | Both CTIs build; 14/14 CTest checks including all eight core checks. |
+| Copy SDK | CopyBackend; no source changes. | `build-deb-validation`: 11/11 tests including mock conformance, stop priority and camera controls. |
+| Frame grabber | CopyBackend; no source changes. | `build-genapi351`: 11/11 tests including image layout/dynamic geometry smoke. |
+| Queued SDK | Default FIFO plus its own SDK FIFO validation; no source changes. | `build/core-any-order`: 10/10 tests including native stop fault and XML. Optional GenApi-C/simulator tests unavailable. Vendor libatcore emits malformed `.dynsym` local-symbol linker warnings; links succeed. |
 
 Wrapper source trees were clean before and after the builds. Existing stale
 dependency cache paths required reconfiguration to available SDK/header paths;
@@ -110,14 +110,14 @@ these were build-cache changes only. Rebuild queued CTIs with matching headers
 and static archives; mixing old objects with the new virtual interface is not
 supported.
 
-From `camera adapterGenTL`, normal checks use `cmake --build build -j4` and
+From the out-of-order producer checkout, normal checks use `cmake --build build -j4` and
 `ctest --test-dir build --output-on-failure`. Focused sanitizer checks use
 the existing Debug `build-sanitize` with
 `-fsanitize=address,undefined -fno-omit-frame-pointer`, leak detection enabled,
-and the queued completion/retirement plus out-of-order backend patch/backend tests.
+and the queued completion/retirement plus the out-of-order backend patch/backend tests.
 All four focused ASan/UBSan tests passed with leak detection. A separate Debug
 `build/tsan` using `-fsanitize=thread -fno-omit-frame-pointer` passed both the
-queued completion and full out-of-order backend runtime/adapter tests with no race report.
+queued completion and full out-of-order producer tests with no race report.
 
 No physical camera or latency benchmark ran. The fixed hardware ring still
 waits for an earlier held buffer even when later buffers have returned; this
@@ -125,9 +125,9 @@ change permits those returns without granting premature hardware reuse.
 
 ## Completion notifications, core 0.2.4
 
-The user requested removing the 100 µs timer for out-of-order backend while preserving other
+The notification path removes the 100 µs timer for the out-of-order backend while preserving other
 wrappers. `QueuedBackend::set_completion_callback` defaults to false and is only
-queried for `kAny`. False preserves the existing timed fallback. out-of-order backend returns
+queried for `kAny`. False preserves the existing timed fallback. The out-of-order backend returns
 true and forwards the callback to its existing native interception bridge.
 The bridge signals after `internal_release` publishes the completed entry, and
 on poison and begin/end stop. DCAM's configured native callback is preserved.
@@ -151,7 +151,7 @@ and the out-of-order backend bridge's existing DSO pinning remain required.
 The review identified a fault case when the consumer held every image: waking
 then immediately sleeping for new input would ignore a native fault. The
 notification-enabled worker now performs nonblocking status checks even when
-its outstanding deque is empty. out-of-order backend checks health without attaching when
+its outstanding deque is empty. The out-of-order backend checks health without attaching when
 the initial pool is still empty. Unsupported-callback and FIFO paths retain
 their former empty-input behavior.
 
@@ -183,9 +183,9 @@ Software evidence:
   boundaries were reviewed separately from software checks.
 
 The other three wrappers rebuilt against core 0.2.4 without source changes:
-SDK2 11/11, SDK3 10/10 and triggered 11/11 tests passed. SDK3's vendor linker warnings
+SDK2 11/11, SDK3 10/10 and frame grabber 11/11 tests passed. SDK3's vendor linker warnings
 and unavailable optional GenApi-C test remain as documented above. Normal and
 sanitizer reproduction use the same commands/build directories above.
 Final notification implementation: all 14 normal checks, four focused
 ASan/UBSan checks with leak detection, and both ThreadSanitizer checks passed.
-No camera callback-latency measurement or physical acquisition was performed.
+Physical acquisition and callback latency remain unverified.
