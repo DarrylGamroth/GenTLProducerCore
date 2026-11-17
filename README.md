@@ -20,8 +20,8 @@ CMake downloads the standalone EMVA GenTL 1.6 headers and verifies their
 SHA-256 hash. For an offline build, set `GenTLHeaders_ROOT` to the header
 directory and `GenTLProducerCore_FETCH_GENTL_HEADERS=OFF`. The tests use mock
 backends and require no vendor SDK or camera. CI instruments the library with
-`GENTL_CORE_COVERAGE=ON` in an out-of-tree GCC build and reports line and branch
-coverage through Codecov.
+`GENTL_CORE_COVERAGE=ON` in an out-of-tree GCC build, requires above 90%
+production line coverage, and reports line and branch coverage through Codecov.
 
 ## Use in a producer
 

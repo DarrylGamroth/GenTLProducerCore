@@ -7,7 +7,7 @@ package. Builds use the smallest files published on the official
 | Consumer | Build input | Download size | Pinned SHA-256 |
 | --- | --- | ---: | --- |
 | All producers and `GenTLProducerCore` | [GenTL 1.6 reference header archive](https://www.emva.org/wp-content/uploads/GenTL_v1_6.zip) | 11,781 bytes | `48c0867219c4d04a968a27e740d81068fae08b6ab94c9834b221530d941bb4d1` |
-| `continuousSDK3GenTL` | [PFNC reference header](https://www.emva.org/wp-content/uploads/PFNC.h) | 108,288 bytes | `277be4ce44f48afd87797203a825ffbd34567a7af1a25ee047737ce9f87c0a66` |
+| `continuousSDK3GenTL` | [PFNC reference header](https://www.emva.org/wp-content/uploads/PFNC.h) | 109,390 bytes | `6d9dd799df936e2c3c9646ecc49db13418428c7af582f928daa4d9e1b0d85e7e` |
 | `continuousSDK3GenTL` schema test | [GenApi 1.1 schema archive](https://www.emva.org/wp-content/uploads/GenApiSchema_Version_1_1.xsd_.zip) | 6,811 bytes | `6dc9e3dd8b235a89b34423db3cf2bc10fd4f1ffd600bd3eb453a20858ce9ea9b` |
 
 The extracted files are also verified. A hash mismatch stops configuration so
@@ -19,10 +19,9 @@ That test is enabled when a GenApi-C runtime and headers are supplied. The
 producer and its XML schema test do not require the roughly 121 MB standalone
 GenApi reference-implementation download.
 
-EMVA does not list the CLProtocol SDK headers as a separate download. The triggered
-producer and a CLProtocol provider must therefore use an existing CLProtocol
-1.2 SDK/header installation. Fetching the complete GenICam package solely for
-those headers remains possible, but is not the default.
+EMVA distributes the CLProtocol SDK headers in its GenICam package.
+The CLProtocol GenTL build and the triggered CI workflow fetch that package and
+extract the headers. The Core build uses the standalone GenTL archive.
 
 ## License handling
 
