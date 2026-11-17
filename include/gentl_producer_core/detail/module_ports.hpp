@@ -29,6 +29,8 @@ void apply_stream_description_locked(DsHandleData *stream,
                                      const StreamDescription &description);
 void publish_stream_description(DevHandleData *device,
                                 const StreamDescription &description);
+std::size_t queued_buffer_count_locked(const DsHandleData *stream);
+std::size_t buffer_announce_minimum_locked(const DsHandleData *stream);
 
 std::unique_ptr<PortModel> make_tl_port_model(const BackendInfo &backend_info,
                                               TlHandleData *system);

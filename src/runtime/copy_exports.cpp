@@ -11,7 +11,9 @@
 #include <memory>
 #include <ranges>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <utility>
 
 namespace gentl_producer_core::runtime {
 namespace {
@@ -19,6 +21,7 @@ namespace {
 #ifdef GENTL_RUNTIME_TEST_HOOKS
 void (*buffer_publication_hook)(void *, int) = nullptr;
 void *buffer_publication_context = nullptr;
+bool fail_thread_start = false;
 
 void buffer_publication_test_hook(int stage) {
   if (buffer_publication_hook != nullptr)
@@ -175,6 +178,8 @@ void snapshot_buffer_description_locked(DsHandleData *stream,
                    .pixel_size_bits = stream->current_pixel_size_bits,
                    .offset_x = stream->current_offset_x,
                    .offset_y = stream->current_offset_y,
+                   .x_padding_bytes = stream->current_x_padding,
+                   .y_padding_bytes = stream->current_y_padding,
                    .pixel_endianness = stream->current_pixel_endianness};
 }
 
@@ -408,6 +413,10 @@ extern "C" GC_IMPORT_EXPORT void GC_CALLTYPE
 GenTLTestSetBufferPublicationHook(void (*hook)(void *, int), void *context) {
   gentl_producer_core::runtime::buffer_publication_hook = hook;
   gentl_producer_core::runtime::buffer_publication_context = context;
+}
+
+extern "C" GC_IMPORT_EXPORT void GC_CALLTYPE GenTLTestFailThreadStart() {
+  gentl_producer_core::runtime::fail_thread_start = true;
 }
 #endif
 
@@ -1263,8 +1272,29 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
       std::scoped_lock device_lock(stream->parent->mutex);
       stream->parent->acquisition_active = true;
     }
-    stream->worker =
-        std::thread(gentl_producer_core::runtime::stream_worker, stream);
+    try {
+#ifdef GENTL_RUNTIME_TEST_HOOKS
+      if (std::exchange(gentl_producer_core::runtime::fail_thread_start, false))
+        throw std::system_error(
+            std::make_error_code(std::errc::resource_unavailable_try_again));
+#endif
+      stream->worker =
+          std::thread(gentl_producer_core::runtime::stream_worker, stream);
+    } catch (const std::system_error &error) {
+      const bool stopped =
+          gentl_producer_core::runtime::Runtime::instance().stop_stream(
+              stream->parent->device, &error_text);
+      stream->worker_running = false;
+      stream->is_acquiring = false;
+      stream->acquisition_session_active = !stopped;
+      stream->stop_requested = !stopped;
+      {
+        std::scoped_lock device_lock(stream->parent->mutex);
+        stream->parent->acquisition_active = !stopped;
+      }
+      return gentl_producer_core::runtime::io_error(
+          error_text.empty() ? error.what() : error_text);
+    }
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),
@@ -1306,22 +1336,28 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
     stream->worker.join();
   }
 
+  bool worker_failed = false;
   {
     std::scoped_lock lock(stream->mutex);
     stream->worker_running = false;
     stream->is_acquiring = false;
-    stream->acquisition_session_active = false;
+    stream->acquisition_session_active = !stopped;
+    if (stopped && !stream->worker_error.empty()) {
+      worker_failed = true;
+      error_text = std::move(stream->worker_error);
+    }
   }
   {
     std::scoped_lock lock(stream->parent->mutex);
-    stream->parent->acquisition_active = false;
+    stream->parent->acquisition_active = !stopped;
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),
       gentl_producer_core::runtime::Runtime::instance()
           .acquisition_invalidated_features());
-  return stopped ? GC_ERR_SUCCESS
-                 : gentl_producer_core::runtime::io_error(error_text);
+  return stopped && !worker_failed
+             ? GC_ERR_SUCCESS
+             : gentl_producer_core::runtime::io_error(error_text);
 }
 
 GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
@@ -1337,10 +1373,7 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
 
   std::scoped_lock lock(stream->mutex);
   const auto queued =
-      stream->input_queue.size() +
-      static_cast<size_t>(std::count_if(
-          stream->buffers.begin(), stream->buffers.end(),
-          [](const auto &buffer) { return buffer->is_acquiring; }));
+      gentl_producer_core::runtime::queued_buffer_count_locked(stream);
   const auto awaiting_delivery = static_cast<size_t>(std::count_if(
       stream->buffers.begin(), stream->buffers.end(),
       [](const auto &buffer) { return buffer->awaiting_delivery; }));
@@ -1389,7 +1422,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
         0, INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ANNOUNCE_MIN:
     return gentl_producer_core::runtime::info_scalar<size_t>(
-        1, INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
+        gentl_producer_core::runtime::buffer_announce_minimum_locked(stream),
+        INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ALIGNMENT:
     return gentl_producer_core::runtime::info_scalar<size_t>(
         stream->current_buffer_alignment, INFO_DATATYPE_SIZET, piType, pBuffer,
@@ -1539,8 +1573,10 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetBufferInfo(
           has_snapshot ? buffer->image.offset_x : stream->current_offset_x,
       .y_offset =
           has_snapshot ? buffer->image.offset_y : stream->current_offset_y,
-      .x_padding = 0,
-      .y_padding = 0,
+      .x_padding = has_snapshot ? buffer->image.x_padding_bytes
+                                : stream->current_x_padding,
+      .y_padding = has_snapshot ? buffer->image.y_padding_bytes
+                                : stream->current_y_padding,
       .frame_id = buffer->frame_id,
       .image_present = buffer->size_filled != 0,
       .pixel_format = has_snapshot ? buffer->image.pixel_format

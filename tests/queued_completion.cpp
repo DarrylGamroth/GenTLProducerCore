@@ -365,6 +365,15 @@ void bad_completions(bool notifications) {
   {
     Session s(BufferCompletionOrder::kFifo);
     s.start();
+    std::size_t queued = 0;
+    std::size_t size = sizeof(queued);
+    INFO_DATATYPE type = INFO_DATATYPE_UNKNOWN;
+    assert(DSGetInfo(s.stream, STREAM_INFO_NUM_QUEUED, &type, &queued, &size) ==
+           GC_ERR_SUCCESS && queued == 3);
+    std::uint64_t xml_queued = 0;
+    size = sizeof(xml_queued);
+    assert(GCReadPort(s.stream, 0x00b0, &xml_queued, &size) == GC_ERR_SUCCESS &&
+           xml_queued == queued);
     control.await([] { return control.waits != 0; });
     {
       std::scoped_lock lock(control.mutex);

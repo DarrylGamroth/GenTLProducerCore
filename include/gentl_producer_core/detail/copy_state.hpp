@@ -126,6 +126,8 @@ struct DsHandleData final : BaseHandle {
   std::size_t current_height = 0;
   std::size_t current_offset_x = 0;
   std::size_t current_offset_y = 0;
+  std::size_t current_x_padding = 0;
+  std::size_t current_y_padding = 0;
   std::size_t current_payload_size = 0;
   std::size_t current_buffer_alignment = 1;
   std::uint32_t current_pixel_format = 0;

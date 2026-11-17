@@ -1739,7 +1739,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
   }
 
   std::scoped_lock lock(stream->mutex);
-  const auto queued = stream->input_queue.size() + stream->sdk_queue.size();
+  const auto queued =
+      gentl_producer_core::runtime::queued_buffer_count_locked(stream);
   const auto awaiting_delivery = static_cast<size_t>(std::count_if(
       stream->buffers.begin(), stream->buffers.end(),
       [](const auto &buffer) { return buffer->awaiting_delivery; }));
@@ -1790,8 +1791,8 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSGetInfo(DS_HANDLE hDataStream,
         0, INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ANNOUNCE_MIN:
     return gentl_producer_core::runtime::info_scalar<size_t>(
-        std::max<std::size_t>(1, gentl_producer_core::runtime::Runtime::instance()
-                                     .native_buffer_count(stream->parent->device)), INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
+        gentl_producer_core::runtime::buffer_announce_minimum_locked(stream),
+        INFO_DATATYPE_SIZET, piType, pBuffer, piSize);
   case STREAM_INFO_BUF_ALIGNMENT:
     return gentl_producer_core::runtime::info_scalar<size_t>(
         stream->current_buffer_alignment, INFO_DATATYPE_SIZET, piType, pBuffer,

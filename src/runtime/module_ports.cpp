@@ -35,6 +35,27 @@ std::uint64_t device_access_value(GenTL::DEVICE_ACCESS_FLAGS access) {
 
 } // namespace
 
+std::size_t queued_buffer_count_locked(const DsHandleData *stream) {
+#if defined(GENTL_RUNTIME_COPY)
+  const auto active = static_cast<std::size_t>(std::count_if(
+      stream->buffers.begin(), stream->buffers.end(),
+      [](const auto &buffer) { return buffer->is_acquiring; }));
+  return stream->input_queue.size() + active;
+#else
+  return stream->input_queue.size() + stream->sdk_queue.size();
+#endif
+}
+
+std::size_t buffer_announce_minimum_locked(const DsHandleData *stream) {
+#if defined(GENTL_RUNTIME_COPY)
+  (void)stream;
+  return 1;
+#else
+  return std::max<std::size_t>(
+      1, Runtime::instance().native_buffer_count(stream->parent->device));
+#endif
+}
+
 void apply_stream_description_locked(DsHandleData *stream,
                                      const StreamDescription &description) {
   stream->current_width = description.width;
@@ -45,9 +66,9 @@ void apply_stream_description_locked(DsHandleData *stream,
 #else
   stream->current_x_offset = description.offset_x;
   stream->current_y_offset = description.offset_y;
+#endif
   stream->current_x_padding = description.x_padding_bytes;
   stream->current_y_padding = description.y_padding_bytes;
-#endif
   stream->current_payload_size = description.payload_size_bytes;
   stream->current_buffer_alignment = description.buffer_alignment;
   stream->current_pixel_format = description.pixel_format;
@@ -257,17 +278,16 @@ std::unique_ptr<PortModel> make_ds_port_model(const BackendInfo &backend_info,
         return value == 0U ? GenTL::GC_ERR_SUCCESS
                            : GenTL::GC_ERR_INVALID_VALUE;
       }));
-  registers.push_back(integer_register(0x0098, [] { return 1U; }));
+  registers.push_back(integer_register(0x0098, stream_integer([stream] {
+    return buffer_announce_minimum_locked(stream);
+  })));
   registers.push_back(integer_register(
       0x00a0, stream_integer([stream] { return stream->delivered_count; })));
   registers.push_back(integer_register(
       0x00a8, stream_integer([stream] { return stream->underrun_count; })));
   registers.push_back(integer_register(
       0x00b0, stream_integer([stream] {
-        return stream->input_queue.size() +
-               static_cast<std::size_t>(std::count_if(
-                   stream->buffers.begin(), stream->buffers.end(),
-                   [](const auto &buffer) { return buffer->is_acquiring; }));
+        return queued_buffer_count_locked(stream);
       })));
   registers.push_back(integer_register(
       0x00b8, stream_integer([stream] {

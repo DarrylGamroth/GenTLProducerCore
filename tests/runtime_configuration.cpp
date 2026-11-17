@@ -10,6 +10,12 @@
 #include <mutex>
 #include <thread>
 
+#if defined(GENTL_RUNTIME_COPY)
+namespace GenTL {
+extern "C" void GC_CALLTYPE GenTLTestFailThreadStart();
+}
+#endif
+
 namespace gentl_producer_core::runtime {
 namespace {
 
@@ -27,6 +33,10 @@ struct Configuration {
   bool release_description = false;
   bool acquiring = false;
   bool deliver = false;
+  bool fail_stop = false;
+  bool fail_acquire = false;
+  bool acquire_failed = false;
+  std::size_t native_buffers = 0;
   std::deque<void *> borrowed;
 } configuration;
 
@@ -85,6 +95,7 @@ public:
               .payload_size_bytes = configuration.width * configuration.height,
               .pixel_format = 0x01080001,
               .pixel_size_bits = 8,
+              .x_padding_bytes = configuration.width == 8 ? 2U : 0U,
               .pixel_endianness = GenTL::PIXELENDIANNESS_UNKNOWN};
     if (configuration.block_description) {
       configuration.description_entered = true;
@@ -100,12 +111,18 @@ public:
     return true;
   }
 #if defined(GENTL_RUNTIME_COPY)
-  bool stop_stream(const DeviceDescriptor &, std::string *) override
+  bool stop_stream(const DeviceDescriptor &, std::string *error) override
 #else
   StopResult stop_stream(const DeviceDescriptor &, std::string *) override
 #endif
   {
     std::scoped_lock lock(configuration.mutex);
+#if defined(GENTL_RUNTIME_COPY)
+    if (configuration.fail_stop) {
+      *error = "injected stop failure";
+      return false;
+    }
+#endif
     configuration.acquiring = false;
     configuration.borrowed.clear();
     configuration.condition.notify_all();
@@ -115,6 +132,11 @@ public:
     return {true, true};
 #endif
   }
+#if defined(GENTL_RUNTIME_QUEUED)
+  std::size_t native_buffer_count(const DeviceDescriptor &) const override {
+    return configuration.native_buffers;
+  }
+#endif
   bool remote_write_requires_idle(std::uint64_t address,
                                   std::size_t) const override {
     return address == 0 || address == 8 || address == 32;
@@ -146,13 +168,21 @@ public:
 #if defined(GENTL_RUNTIME_COPY)
   bool acquire_frame(const DeviceDescriptor &, std::uint64_t, void *buffer,
                      std::size_t size, AcquireFrameResult *result,
-                     std::string *) override
+                     std::string *error) override
 #else
   bool wait_frame(const DeviceDescriptor &, std::uint64_t,
                   AcquireFrameResult *result, std::string *) override
 #endif
   {
     std::unique_lock lock(configuration.mutex);
+#if defined(GENTL_RUNTIME_COPY)
+    if (configuration.fail_acquire) {
+      *error = "injected acquire failure";
+      configuration.acquire_failed = true;
+      configuration.condition.notify_all();
+      return false;
+    }
+#endif
     configuration.condition.wait(
         lock, [] { return !configuration.acquiring || configuration.deliver; });
     if (!configuration.acquiring) {
@@ -299,6 +329,34 @@ int main() {
   EVENT_HANDLE event = nullptr;
   assert(GCRegisterEvent(stream, EVENT_NEW_BUFFER, &event) == GC_ERR_SUCCESS);
   assert(DSQueueBuffer(stream, buffer) == GC_ERR_SUCCESS);
+#if defined(GENTL_RUNTIME_COPY)
+  GenTLTestFailThreadStart();
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, GENTL_INFINITE) ==
+         GC_ERR_IO);
+  assert(!configuration.acquiring);
+  configuration.fail_stop = true;
+  GenTLTestFailThreadStart();
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, GENTL_INFINITE) ==
+         GC_ERR_IO);
+  assert(configuration.acquiring);
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, GENTL_INFINITE) ==
+         GC_ERR_RESOURCE_IN_USE);
+  configuration.fail_stop = false;
+  assert(DSStopAcquisition(stream, ACQ_STOP_FLAGS_DEFAULT) == GC_ERR_SUCCESS);
+  assert(!configuration.acquiring);
+  configuration.fail_acquire = true;
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, GENTL_INFINITE) ==
+         GC_ERR_SUCCESS);
+  {
+    std::unique_lock lock(configuration.mutex);
+    assert(configuration.condition.wait_for(lock, std::chrono::seconds(2), [] {
+      return configuration.acquire_failed;
+    }));
+  }
+  assert(DSStopAcquisition(stream, ACQ_STOP_FLAGS_DEFAULT) == GC_ERR_IO);
+  assert(Runtime::instance().last_error().second == "injected acquire failure");
+  configuration.fail_acquire = false;
+#endif
   assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, GENTL_INFINITE) ==
          GC_ERR_SUCCESS);
   const auto active_descriptions = configuration.descriptions;
@@ -337,9 +395,11 @@ int main() {
   expect_payload(stream, 16);
   assert(buffer_value<std::size_t>(stream, buffer, BUFFER_INFO_WIDTH) ==
          8); // snapshot
+  assert(buffer_value<std::size_t>(stream, buffer, BUFFER_INFO_XPADDING) == 2);
   assert(DSQueueBuffer(stream, buffer) == GC_ERR_SUCCESS);
   assert(buffer_value<std::size_t>(stream, buffer, BUFFER_INFO_WIDTH) ==
          4); // unfilled
+  assert(buffer_value<std::size_t>(stream, buffer, BUFFER_INFO_XPADDING) == 0);
   assert(buffer_value<std::size_t>(stream, buffer,
                                    BUFFER_INFO_DELIVERED_IMAGEHEIGHT) == 0);
 
@@ -431,6 +491,20 @@ int main() {
 #endif
   assert(DSFlushQueue(stream, ACQ_QUEUE_ALL_DISCARD) == GC_ERR_SUCCESS);
   assert(DSRevokeBuffer(stream, buffer, nullptr, nullptr) == GC_ERR_SUCCESS);
+#if defined(GENTL_RUNTIME_QUEUED)
+  configuration.native_buffers = 3;
+  std::size_t minimum = 0;
+  std::size_t minimum_size = sizeof(minimum);
+  INFO_DATATYPE minimum_type = INFO_DATATYPE_UNKNOWN;
+  assert(DSGetInfo(stream, STREAM_INFO_BUF_ANNOUNCE_MIN, &minimum_type, &minimum,
+                   &minimum_size) == GC_ERR_SUCCESS);
+  assert(minimum == 3);
+  std::uint64_t xml_minimum = 0;
+  minimum_size = sizeof(xml_minimum);
+  assert(GCReadPort(stream, 0x0098, &xml_minimum, &minimum_size) == GC_ERR_SUCCESS);
+  assert(xml_minimum == minimum);
+  configuration.native_buffers = 0;
+#endif
   assert(EventKill(event) == GC_ERR_SUCCESS);
   assert(DSClose(stream) == GC_ERR_SUCCESS);
   assert(DevClose(device) == GC_ERR_SUCCESS);

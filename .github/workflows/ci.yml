@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: GCC tests and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install coverage dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcovr ninja-build
+      - name: Build and test
+        run: |
+          build="$RUNNER_TEMP/core"
+          cmake -S . -B "$build" -G Ninja -DBUILD_TESTING=ON -DGENTL_CORE_COVERAGE=ON
+          cmake --build "$build" --parallel
+          ctest --test-dir "$build" --output-on-failure --no-tests=error
+      - name: Collect line and branch coverage
+        run: |
+          gcovr --root "$GITHUB_WORKSPACE" --filter '^src/' --filter '^include/' \
+            --cobertura "$RUNNER_TEMP/coverage.xml" --print-summary "$RUNNER_TEMP/core"
+      - name: Upload coverage to Codecov
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: ${{ runner.temp }}/coverage.xml
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true

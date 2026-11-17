@@ -2,6 +2,15 @@ cmake_minimum_required(VERSION 3.20)
 
 project(GenTLProducerCore VERSION 0.2.5 LANGUAGES CXX)
 
+option(GENTL_CORE_COVERAGE "Enable GCC coverage for GenTLProducerCore" OFF)
+if(GENTL_CORE_COVERAGE)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR "GENTL_CORE_COVERAGE requires GCC")
+  endif()
+  add_compile_options(--coverage -O0 -g)
+  add_link_options(--coverage)
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(CTest)
@@ -84,7 +93,7 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     "${CMAKE_CURRENT_BINARY_DIR}/GenTLProducerCoreConfigVersion.cmake"
     cmake/GenTLHeaders.cmake
     DESTINATION "${GENTL_PRODUCER_CORE_CMAKE_DIR}")
-  install(FILES README.md docs/EMVA_DEPENDENCIES.md
+  install(FILES LICENSE README.md docs/EMVA_DEPENDENCIES.md
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libgentl-producer-core-dev")
 endif()
 
@@ -119,7 +128,7 @@ if(BUILD_TESTING)
   set_tests_properties(gentl_queued_completion_tests PROPERTIES TIMEOUT 30)
   foreach(model copy queued)
     add_executable(gentl_${model}_configuration_tests tests/runtime_configuration.cpp)
-    target_link_libraries(gentl_${model}_configuration_tests PRIVATE ${model}_runtime)
+    target_link_libraries(gentl_${model}_configuration_tests PRIVATE ${model}_runtime_test)
     target_compile_options(gentl_${model}_configuration_tests PRIVATE
       -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
     add_test(NAME gentl_${model}_configuration_tests COMMAND gentl_${model}_configuration_tests)
