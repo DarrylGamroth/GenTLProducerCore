@@ -71,7 +71,7 @@ NOTWRITABLE status verification, FIFO retention, prepare/queue/start guards,
 close failure and retry, and unresolved retirement during destruction. It links
 the vendor library for unused symbol resolution without discovering a camera.
 
-Fail-before evidence: `/path/to/before-fix.log` shows retained-session failure
+Fail-before evidence: the before-fix test log shows retained-session failure
 with the former behavior; the native test fails the former wrapper because
 prepare was allowed after a failed flush. The early R5 draft also failed the
 existing SDK3 timed in-flight DEFAULT-stop test; that compatibility regression

@@ -14,9 +14,7 @@ CTI, or modify any original checkout. Use isolated worktrees and builds.
 | continuousSDK2GenTL | fd20b6e | sdk2 / refactor/shared-buffer-info |
 | continuousSDK3GenTL | 05d33a6 | sdk3 / refactor/shared-buffer-info |
 
-All initial trees were clean. Worktrees live under
-`/path/to/workspace/worktrees/gentl-buffer-info-20261031`.
-The original SDK2 production build remains untouched.
+The review used separate worktrees with clean starting trees.
 
 ## Interface and ownership
 
@@ -111,14 +109,9 @@ CTI remains at its pre-extraction path and timestamp.
 
 ### Verification environment and commands
 
-SDK2 SDK/header root: `/path/to/continuous-sdk2`; config is the mock
-config created by CMake for producer tests. GenTL headers come from the
-existing `continuousSDK2GenTL/build/_deps/gentl-1.6`. XML schema is
-`/path/to/GenApiSchema_Version_1_1.xsd`.
-
-The old SDK3 build referenced missing `/path/to/continuous-sdk3` and
-`GenICam_Package_2025.10` directories. Verification instead uses the existing
-SDK3 at `/path/to/continuous-sdk3` (read-only). EMVA's
+For reproduction, point CMake at the SDK2 and SDK3 installations, the
+EMVA GenTL 1.6 headers, and the GenApi 1.1 schema. SDK2 tests use the mock
+configuration created by CMake. EMVA's
 [2025.10 package](https://www.emva.org/standards-technology/genicam/genicam-downloads-archive/)
 was downloaded to the isolated workspace and verified against its published
 SHA-256 `632fed8c4092855354741261908ff0df0bf7a8ef6fedfa261ebec29a7998e8e6`.
@@ -172,7 +165,7 @@ Full local logs are siblings of these worktrees: `core-*.log`,
 
 The independent reviewer examined both adapter diffs and all core additions,
 checked mappings against source baselines, and independently built and tested
-the core under `/path/to/review-build`. No confirmed
+the core in an independent build directory. No confirmed
 finding required remediation. The producer test runs and installed-package
 builds were verified by the primary agent. The review did not independently
 repeat those integration runs or access hardware. No unresolved identifier or

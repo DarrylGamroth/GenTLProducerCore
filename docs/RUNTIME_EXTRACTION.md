@@ -9,7 +9,6 @@ module XML, backend creation and vendor policy belong to producer assembly and
 the backend. No camera or the host application restriction applies to this task, but automated
 validation uses SDK2 mocks and SDK3 simulator; physical qualification is distinct.
 
-Worktrees are under `/path/to/workspace/worktrees/gentl-runtime-20261031`.
 All three branches are `refactor/generic-runtime`; starting trees were clean.
 Baselines: core `8469445`, SDK2 `795383c`, SDK3 `1e958c3`.
 
@@ -200,11 +199,9 @@ physical-camera behavior under native SDK failures.
 
 Worktree commands use the new core source directory for source builds; installed
 builds omit that override and set CMAKE_PREFIX_PATH to the isolated install prefix.
-Headers: original SDK2 build/_deps/gentl-1.6. SDK2 root:
-/path/to/continuous-sdk2. SDK3 root:
-/path/to/continuous-sdk3. GenApi package:
-/path/to/workspace/worktrees/gentl-buffer-info-20261031/deps/GenICam_Package_2025.10. Vendor files are read-only dependencies, never copied into
-or committed with the core. SDK3 test PATH includes /usr/sbin:/sbin for its
+The builds used standalone GenTL 1.6 headers, the respective continuous SDKs,
+and the EMVA GenICam 2025.10 package. The core treats vendor files as
+read-only external dependencies. SDK3 test PATH includes /usr/sbin:/sbin for its
 vendor ldconfig invocation. The SDK3 vendor libatcore ELF .dynsym diagnostics
 remain unchanged; no new compiler warnings were observed.
 

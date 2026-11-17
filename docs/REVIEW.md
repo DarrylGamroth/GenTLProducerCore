@@ -5,9 +5,8 @@
 Comprehensive review of all `GenTLProducerCore` implementation and public
 headers, packaging exports, and the SDK2/SDK3 metadata mappings and relevant
 buffer publication/reset paths. This includes inherited code, not just the
-extraction diff. Work remains isolated under
-`/path/to/workspace/worktrees/gentl-buffer-info-20261031` on
-`refactor/shared-buffer-info` in each repository. Baselines: core `c038116`,
+extraction diff. The review used `refactor/shared-buffer-info` in each
+repository. Baselines: core `c038116`,
 SDK2 `fd20b6e`, SDK3 `05d33a6`; all original checkouts were clean.
 
 Authority: EMVA GenTL 1.6, particularly §§4.1.2.2, 6.1.4, 6.1.6,
@@ -72,10 +71,7 @@ source/test changes and final results follow below when verified.
 
 ## Boundaries for a future callback-sdk producer
 
-Assuming the requested SDK is FixtureVendor's callback-sdk, local vendor
-headers are available at
-`/path/to/callback-sdk_C_V2.h`.
-They define per-context discovery/control, SDK ring buffers and raw-image
+FixtureVendor's `callback-sdk_C_V2.h` defines per-context discovery/control, SDK ring buffers and raw-image
 pointers, and image callbacks with a `beforeCopy` selection. This is header
 inspection only, not SDK execution, a vendor lifetime guarantee, or hardware
 validation. No callback-sdk producer is implemented by this work.
@@ -175,8 +171,7 @@ Primary verification logs under the isolated workspace:
 `review-sdk3-baseline-tsan-{configure,build,tests}.log`. Fail-before/pass-after
 queue evidence uses `metadata-publication-sdk{2,3}-*` and
 `metadata-consumer-sdk{2,3}-*`. The core reviewer's original sanitizer repros
-and independent rebuilds remain under `/path/to/port-review-build` and
-`/path/to/review-build`.
+and independent rebuilds used separate build directories.
 
 Relevant source locations (function names remain stable as lines change):
 
