@@ -109,6 +109,26 @@ if(BUILD_TESTING)
   target_compile_options(gentl_producer_core_tests PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wshadow -UNDEBUG)
   add_test(NAME gentl_producer_core_tests COMMAND gentl_producer_core_tests)
+  add_library(gentl_error_test_cti MODULE tests/error_unload_cti.cpp)
+  target_link_libraries(gentl_error_test_cti PRIVATE copy_runtime)
+  # Export just the exercised entry points so GNU-unique C++ library symbols
+  # cannot keep this test fixture mapped after dlclose.
+  set(error_test_exports "${CMAKE_CURRENT_SOURCE_DIR}/tests/error_unload_cti.map")
+  target_link_options(gentl_error_test_cti PRIVATE
+    "LINKER:--version-script,${error_test_exports}")
+  set_target_properties(gentl_error_test_cti PROPERTIES
+    PREFIX "" SUFFIX ".cti"
+    LINK_DEPENDS "${error_test_exports}"
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
+  add_executable(gentl_error_unload_test tests/error_unload.cpp)
+  target_compile_features(gentl_error_unload_test PRIVATE cxx_std_20)
+  target_compile_options(gentl_error_unload_test PRIVATE -UNDEBUG)
+  target_link_libraries(gentl_error_unload_test PRIVATE
+    GenTLHeaders::GenTLHeaders Threads::Threads ${CMAKE_DL_LIBS})
+  add_dependencies(gentl_error_unload_test gentl_error_test_cti)
+  add_test(NAME gentl_error_unload_test
+    COMMAND gentl_error_unload_test $<TARGET_FILE:gentl_error_test_cti>)
+  set_tests_properties(gentl_error_unload_test PROPERTIES TIMEOUT 15)
   add_executable(gentl_buffer_info_tests tests/buffer_info_tests.cpp)
   target_link_libraries(gentl_buffer_info_tests PRIVATE gentl_producer_core)
   target_compile_options(gentl_buffer_info_tests PRIVATE

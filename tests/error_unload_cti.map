@@ -1,0 +1,8 @@
+{
+  global:
+    GCInitLib;
+    GCCloseLib;
+    GCGetLastError;
+    IFClose;
+  local: *;
+};

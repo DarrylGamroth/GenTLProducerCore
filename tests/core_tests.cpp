@@ -1,3 +1,4 @@
+#include "gentl_producer_core/error.hpp"
 #include "gentl_producer_core/info.hpp"
 #include "gentl_producer_core/port_model.hpp"
 
@@ -297,6 +298,19 @@ void test_empty_string_info() {
   EXPECT(size == 1U && buffer[0] == '\0');
 }
 
+void test_last_error_text() {
+  using namespace gentl_producer_core;
+  const std::string long_message(5000, 'x');
+  set_last_error(GenTL::GC_ERR_IO, long_message);
+  const auto long_error = last_error();
+  EXPECT(long_error.first == GenTL::GC_ERR_IO);
+  EXPECT(long_error.second == long_message.substr(0, 4095));
+  set_last_error(GenTL::GC_ERR_BUSY, "shorter message");
+  EXPECT(last_error().second == "shorter message");
+  set_last_error(GenTL::GC_ERR_IO, "");
+  EXPECT(last_error().second.empty());
+}
+
 void test_runtime_path_after_directory_change() {
   // Load through a relative name, then query for the first time after chdir.
   const auto module = std::filesystem::path(GENTL_RUNTIME_PATH_TEST_MODULE);
@@ -344,6 +358,7 @@ int main() {
   test_file_urls();
   test_runtime_path_after_directory_change();
   test_empty_string_info();
+  test_last_error_text();
   test_invalid_backing_and_address_ranges();
   return failures == 0 ? 0 : 1;
 }
