@@ -117,6 +117,9 @@ public:
                              std::size_t buffer_size,
                              AcquireFrameResult *result,
                              std::string *error_text) = 0;
+  // Opt in when a failed stop leaves the backend armed or holding SDK storage.
+  // GenTL then retains the session and stream handle for another stop/close.
+  virtual bool retry_failed_stop() const noexcept { return false; }
 };
 enum class BufferCompletionOrder { kFifo, kAny };
 

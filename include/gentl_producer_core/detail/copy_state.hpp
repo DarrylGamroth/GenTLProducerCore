@@ -119,6 +119,7 @@ struct DsHandleData final : BaseHandle {
   std::deque<struct BufferHandleData *> input_queue;
   std::unique_ptr<PortModel> port_model;
   std::mutex mutex;
+  std::mutex stop_mutex;
   std::thread worker;
   bool stop_requested = false;
   bool worker_running = false;
@@ -207,6 +208,7 @@ public:
                               std::string *error_text);
   bool start_stream(const DeviceDescriptor &device, std::string *error_text);
   bool stop_stream(const DeviceDescriptor &device, std::string *error_text);
+  bool retry_failed_stop() const noexcept { return backend_->retry_failed_stop(); }
   bool acquire_frame(const DeviceDescriptor &device, uint64_t timeout_ms,
                      void *buffer, std::size_t buffer_size,
                      AcquireFrameResult *result, std::string *error_text);

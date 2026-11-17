@@ -40,7 +40,11 @@ does not depend on runtime internals.
 `CopyBackend` fills a caller-selected input buffer. `QueuedBackend` receives
 consumer memory and returns its identity through queue/wait operations. The
 runtime keeps the distinct state/ownership paths, stop behavior and reviewed
-publication/consumption locking from each baseline. It does not replace direct
+publication/consumption locking from each baseline.
+If the backend cannot confirm retirement after a failed stop, override
+`CopyBackend::retry_failed_stop()` to return true. The runtime then retains
+the stream and its buffers for a subsequent `DSStopAcquisition` or `DSClose`.
+The runtime does not replace direct
 queueing with an extra copy, nor loan SDK2-owned circular-buffer memory.
 
 Identical GenTL ABI definitions, runtime state operations and module assembly

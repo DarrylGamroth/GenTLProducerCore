@@ -36,6 +36,8 @@ struct Configuration {
   bool fail_stop = false;
   bool fail_acquire = false;
   bool acquire_failed = false;
+  bool retry_stop = false;
+  unsigned stop_attempts = 0;
   std::size_t native_buffers = 0;
   std::deque<void *> borrowed;
 } configuration;
@@ -111,6 +113,9 @@ public:
     return true;
   }
 #if defined(GENTL_RUNTIME_COPY)
+  bool retry_failed_stop() const noexcept override {
+    return configuration.retry_stop;
+  }
   bool stop_stream(const DeviceDescriptor &, std::string *error) override
 #else
   StopResult stop_stream(const DeviceDescriptor &, std::string *) override
@@ -118,6 +123,8 @@ public:
   {
     std::scoped_lock lock(configuration.mutex);
 #if defined(GENTL_RUNTIME_COPY)
+    ++configuration.stop_attempts;
+    configuration.condition.notify_all();
     if (configuration.fail_stop) {
       *error = "injected stop failure";
       return false;
@@ -490,6 +497,29 @@ int main() {
   assert(buffer_value<std::size_t>(stream, buffer, BUFFER_INFO_WIDTH) == 8);
 #endif
   assert(DSFlushQueue(stream, ACQ_QUEUE_ALL_DISCARD) == GC_ERR_SUCCESS);
+#if defined(GENTL_RUNTIME_COPY)
+  configuration.retry_stop = true;
+  configuration.fail_stop = true;
+  assert(DSQueueBuffer(stream, buffer) == GC_ERR_SUCCESS);
+  const auto stop_attempts = configuration.stop_attempts;
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, 1) == GC_ERR_SUCCESS);
+  deliver(event, buffer, 16);
+  {
+    std::unique_lock lock(configuration.mutex);
+    assert(configuration.condition.wait_for(lock, std::chrono::seconds(2), [&] {
+      return configuration.stop_attempts > stop_attempts;
+    }));
+  }
+  assert(DSStopAcquisition(stream, ACQ_STOP_FLAGS_DEFAULT) == GC_ERR_IO);
+  assert(DSClose(stream) == GC_ERR_IO);
+  assert(DevClose(device) == GC_ERR_ACCESS_DENIED);
+  assert(DSStartAcquisition(stream, ACQ_START_FLAGS_DEFAULT, 1) ==
+         GC_ERR_RESOURCE_IN_USE);
+  assert(write(remote, 0, 8) == GC_ERR_ACCESS_DENIED);
+  configuration.fail_stop = false;
+  assert(DSStopAcquisition(stream, ACQ_STOP_FLAGS_DEFAULT) == GC_ERR_SUCCESS);
+  assert(!configuration.acquiring);
+#endif
   assert(DSRevokeBuffer(stream, buffer, nullptr, nullptr) == GC_ERR_SUCCESS);
 #if defined(GENTL_RUNTIME_QUEUED)
   configuration.native_buffers = 3;

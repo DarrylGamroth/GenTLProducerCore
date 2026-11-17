@@ -287,7 +287,19 @@ void unregister_event_from_source(
   }
 }
 
+bool stop_backend(DsHandleData *stream, std::string *error,
+                  bool from_worker = false) {
+  std::scoped_lock stop_lock(stream->stop_mutex);
+  if (from_worker) {
+    std::scoped_lock lock(stream->mutex);
+    if (stream->stop_requested)
+      return false;
+  }
+  return Runtime::instance().stop_stream(stream->parent->device, error);
+}
+
 void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
+  bool retired = false;
   for (;;) {
     gentl_producer_core::runtime::BufferHandleData *buffer = nullptr;
     {
@@ -372,8 +384,7 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
     }
     if (reached_limit) {
       std::string stop_error;
-      gentl_producer_core::runtime::Runtime::instance().stop_stream(
-          stream->parent->device, &stop_error);
+      retired = stop_backend(stream, &stop_error, true);
       break;
     }
   }
@@ -385,7 +396,8 @@ void stream_worker_impl(gentl_producer_core::runtime::DsHandleData *stream) {
   }
   {
     std::scoped_lock device_lock(stream->parent->mutex);
-    stream->parent->acquisition_active = false;
+    stream->parent->acquisition_active =
+        !retired && Runtime::instance().retry_failed_stop();
   }
   publish_acquisition_status_invalidation(stream->parent);
 }
@@ -1277,8 +1289,7 @@ DSStartAcquisition(DS_HANDLE hDataStream, ACQ_START_FLAGS iStartFlags,
           std::thread(gentl_producer_core::runtime::stream_worker, stream);
     } catch (const std::system_error &error) {
       const bool stopped =
-          gentl_producer_core::runtime::Runtime::instance().stop_stream(
-              stream->parent->device, &error_text);
+          gentl_producer_core::runtime::stop_backend(stream, &error_text);
       stream->worker_running = false;
       stream->is_acquiring = false;
       stream->start_rollback_pending = !stopped;
@@ -1325,22 +1336,23 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
 
   std::string error_text;
   const bool stopped =
-      gentl_producer_core::runtime::Runtime::instance().stop_stream(
-          stream->parent->device, &error_text);
+      gentl_producer_core::runtime::stop_backend(stream, &error_text);
 
   if (stream->worker.joinable()) {
     stream->worker.join();
   }
 
   bool worker_failed = false;
-  bool rollback_pending = false;
+  bool stop_pending = false;
   {
     std::scoped_lock lock(stream->mutex);
     stream->worker_running = false;
     stream->is_acquiring = false;
-    rollback_pending = stream->start_rollback_pending && !stopped;
-    stream->start_rollback_pending = rollback_pending;
-    stream->acquisition_session_active = rollback_pending;
+    stream->start_rollback_pending = !stopped && stream->start_rollback_pending;
+    stop_pending = !stopped &&
+        (stream->start_rollback_pending ||
+         gentl_producer_core::runtime::Runtime::instance().retry_failed_stop());
+    stream->acquisition_session_active = stop_pending;
     if (stopped && !stream->worker_error.empty()) {
       worker_failed = true;
       error_text = std::move(stream->worker_error);
@@ -1348,7 +1360,7 @@ DSStopAcquisition(DS_HANDLE hDataStream, ACQ_STOP_FLAGS iStopFlags) {
   }
   {
     std::scoped_lock lock(stream->parent->mutex);
-    stream->parent->acquisition_active = rollback_pending;
+    stream->parent->acquisition_active = stop_pending;
   }
   gentl_producer_core::runtime::publish_port_feature_invalidations(
       stream->parent->remote_port.get(),
@@ -1446,10 +1458,21 @@ GC_IMPORT_EXPORT GC_ERROR GC_CALLTYPE DSClose(DS_HANDLE hDataStream) {
     stream->stop_requested = true;
   }
   std::string error_text;
-  gentl_producer_core::runtime::Runtime::instance().stop_stream(device->device,
-                                                                &error_text);
+  const bool stopped =
+      gentl_producer_core::runtime::stop_backend(stream, &error_text);
   if (stream->worker.joinable()) {
     stream->worker.join();
+  }
+  if (!stopped) {
+    std::scoped_lock lock(stream->mutex, device->mutex);
+    if (stream->start_rollback_pending ||
+        gentl_producer_core::runtime::Runtime::instance().retry_failed_stop()) {
+      stream->is_acquiring = false;
+      stream->worker_running = false;
+      stream->acquisition_session_active = true;
+      device->acquisition_active = true;
+      return gentl_producer_core::runtime::io_error(error_text);
+    }
   }
   std::vector<gentl_producer_core::runtime::EventHandleData *> events;
   {

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(GenTLProducerCore VERSION 0.2.5 LANGUAGES CXX)
+project(GenTLProducerCore VERSION 0.2.6 LANGUAGES CXX)
 
 option(GENTL_CORE_COVERAGE "Enable GCC coverage for GenTLProducerCore" OFF)
 if(GENTL_CORE_COVERAGE)
